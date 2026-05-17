@@ -48,6 +48,7 @@ export interface UpstreamCaptchaRequest extends UpstreamHttpRequest {
 export interface UpstreamConfig {
   sku?: string;
   token?: string;
+  variables?: Record<string, string>;
   captcha?: UpstreamCaptchaRequest;
   precheck?: UpstreamHttpRequest;
   stock?: UpstreamStockRequest;

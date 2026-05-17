@@ -435,7 +435,7 @@ export async function getPublicProductCaptcha(ctx: AppContext, slug: string): Pr
   if (!captcha.url) {
     throw apiError(400, "验证码请求未配置");
   }
-  return fetchUpstreamCaptcha(captcha, productTemplateVars(product));
+  return fetchUpstreamCaptcha(captcha, productTemplateVars(product, product.upstreamConfig));
 }
 
 export function createProduct(ctx: AppContext, input: CreateProductInput) {
@@ -855,7 +855,7 @@ async function fulfillUpstreamOrder(ctx: AppContext, order: Order, product: Prod
     return manual;
   }
 
-  const vars = orderTemplateVars(product, order);
+  const vars = orderTemplateVars(product, order, config);
   try {
     const result = await runRequest(request, vars, "order");
     const maintenanceReason = detectUpstreamMaintenance(result);
@@ -1052,7 +1052,7 @@ async function checkUpstreamAvailability(product: Product, options: Availability
   if (!config) {
     return { available: false, reason: "未配置上游" };
   }
-  const vars = productTemplateVars(product);
+  const vars = productTemplateVars(product, config);
   const precheck = config.precheck;
   if (!options.skipPrecheck && precheck?.enabled) {
     if (!precheck.url) {
@@ -1462,7 +1462,7 @@ async function notifyFeishu(ctx: AppContext, title: string, text: string) {
 
 function productFromRow(ctx: AppContext, row: ProductRow): Product {
   const deliveryMode = row.delivery_mode;
-  const storedUpstreamConfig = parseJson<UpstreamConfig | null>(row.upstream_config, null);
+  const storedUpstreamConfig = normalizeUpstreamConfig(parseJson<UpstreamConfig | null>(row.upstream_config, null));
   return {
     id: row.id,
     slug: row.slug,
@@ -1486,27 +1486,31 @@ function productFromRow(ctx: AppContext, row: ProductRow): Product {
 }
 
 function resolveProductUpstreamConfig(ctx: AppContext, deliveryMode: DeliveryMode, channelId: number | null, productConfig: UpstreamConfig | null) {
+  const normalizedProductConfig = normalizeUpstreamConfig(productConfig);
   if (deliveryMode !== "upstream" || !channelId) {
-    return productConfig;
+    return normalizedProductConfig;
   }
   const channel = getUpstreamChannelById(ctx, channelId);
   if (!channel) {
-    return productConfig;
+    return normalizedProductConfig;
   }
   return stripNullish({
     ...channel.config,
-    sku: productConfig?.sku,
-    token: productConfig?.token
+    sku: normalizedProductConfig?.sku,
+    token: normalizedProductConfig?.token,
+    variables: mergeTemplateVariables(channel.config.variables, normalizedProductConfig?.variables)
   }) as UpstreamConfig;
 }
 
 function productUpstreamConfigForStorage(config: UpstreamConfig | null, channelId: number | null) {
+  const normalized = normalizeUpstreamConfig(config);
   if (!channelId) {
-    return config;
+    return normalized;
   }
   const identity = stripNullish({
-    sku: config?.sku,
-    token: config?.token
+    sku: normalized?.sku,
+    token: normalized?.token,
+    variables: normalized?.variables
   }) as UpstreamConfig;
   return Object.keys(identity).length ? identity : null;
 }
@@ -1516,7 +1520,7 @@ function channelFromRow(row: UpstreamChannelRow): UpstreamChannel {
     id: row.id,
     name: row.name,
     description: row.description,
-    config: parseJson<UpstreamConfig>(row.config, {}),
+    config: normalizeUpstreamConfig(parseJson<UpstreamConfig>(row.config, {})) ?? {},
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -1597,7 +1601,7 @@ function normalizeProductInput(input: CreateProductInput | (Product & UpdateProd
     pickupUrl: blankToNull(input.pickupUrl),
     pickupOpenMode,
     lookupMethods,
-    upstreamConfig: input.upstreamConfig ?? null
+    upstreamConfig: normalizeUpstreamConfig(input.upstreamConfig)
   };
 }
 
@@ -1609,7 +1613,7 @@ function normalizeUpstreamChannelInput(input: UpstreamChannelInput) {
   return {
     name,
     description: input.description?.trim() ?? "",
-    config: input.config ?? {}
+    config: normalizeUpstreamConfig(input.config) ?? {}
   };
 }
 
@@ -1824,20 +1828,80 @@ function renderTemplate(value: string, vars: Record<string, string>) {
   return value.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, key: string) => vars[key] ?? "");
 }
 
-function productTemplateVars(product: Product) {
-  return {
+function normalizeUpstreamConfig(config: UpstreamConfig | null | undefined): UpstreamConfig | null {
+  if (!config) {
+    return config ?? null;
+  }
+  return stripNullish({
+    ...config,
+    variables: normalizeTemplateVariables(config.variables)
+  }) as UpstreamConfig;
+}
+
+function normalizeTemplateVariables(value: UpstreamConfig["variables"] | undefined) {
+  if (!value) {
+    return undefined;
+  }
+  const entries = Object.entries(value)
+    .map(([key, item]) => {
+      const normalizedValue = item === undefined || item === null
+        ? ""
+        : typeof item === "string"
+          ? item
+          : typeof item === "object"
+            ? JSON.stringify(item)
+            : String(item);
+      return [key.trim(), normalizedValue] as const;
+    })
+    .filter(([key]) => key);
+  return entries.length ? Object.fromEntries(entries) as Record<string, string> : undefined;
+}
+
+function mergeTemplateVariables(...sources: Array<UpstreamConfig["variables"] | undefined>) {
+  const merged: Record<string, string> = {};
+  for (const source of sources) {
+    const normalized = normalizeTemplateVariables(source);
+    if (!normalized) {
+      continue;
+    }
+    Object.assign(merged, normalized);
+  }
+  return Object.keys(merged).length ? merged : undefined;
+}
+
+function renderUpstreamVariables(variables: UpstreamConfig["variables"] | undefined, vars: Record<string, string>) {
+  const normalized = normalizeTemplateVariables(variables);
+  if (!normalized) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(normalized).map(([key, value]) => [key, renderTemplate(value, vars)])
+  ) as Record<string, string>;
+}
+
+function productTemplateVars(product: Product, config: UpstreamConfig | null = product.upstreamConfig) {
+  const base = {
     productId: String(product.id),
     productSlug: product.slug,
     productTitle: product.title,
-    sku: product.upstreamConfig?.sku ?? product.slug,
-    token: product.upstreamConfig?.token ?? "",
+    sku: config?.sku ?? product.slug,
+    token: config?.token ?? "",
     price: product.price
+  };
+  return {
+    ...renderUpstreamVariables(config?.variables, base),
+    ...base
   };
 }
 
-function orderTemplateVars(product: Product, order: Order) {
-  return {
-    ...productTemplateVars(product),
+function orderTemplateVars(product: Product, order: Order, config: UpstreamConfig | null = product.upstreamConfig) {
+  const base = {
+    productId: String(product.id),
+    productSlug: product.slug,
+    productTitle: product.title,
+    sku: config?.sku ?? product.slug,
+    token: config?.token ?? "",
+    price: product.price,
     orderId: order.id,
     contactType: order.contactType,
     contact: order.contactValue,
@@ -1846,6 +1910,10 @@ function orderTemplateVars(product: Product, order: Order) {
     amount: order.amount,
     captcha: order.upstreamCaptcha ?? "",
     captchaToken: order.upstreamCaptchaToken ?? ""
+  };
+  return {
+    ...renderUpstreamVariables(config?.variables, base),
+    ...base
   };
 }
 

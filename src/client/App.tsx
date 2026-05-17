@@ -235,6 +235,7 @@ interface UpstreamRequestFormValue {
 interface UpstreamConfigFormValue {
   sku?: string;
   token?: string;
+  variablesText?: string;
   captcha?: UpstreamRequestFormValue;
   precheck?: UpstreamRequestFormValue;
   stock?: UpstreamRequestFormValue;
@@ -1102,6 +1103,7 @@ function ProductDrawer({ product, channels, open, onClose, onSaved }: { product:
     const next = upstreamConfigToForm(channel.config);
     next.sku = current.sku ?? "";
     next.token = current.token ?? "";
+    next.variablesText = current.variablesText?.trim() ? current.variablesText : next.variablesText ?? "";
     form.setFieldValue("upstreamConfig", next);
   };
 
@@ -1208,6 +1210,9 @@ function ProductDrawer({ product, channels, open, onClose, onSaved }: { product:
                   <Input.Password placeholder="secret-token" />
                 </Form.Item>
               </div>
+              <Form.Item name={["upstreamConfig", "variablesText"]} label="自定义变量">
+                <Input.TextArea rows={3} placeholder="shopId: 1001&#10;region: CN" />
+              </Form.Item>
               <Form.Item noStyle shouldUpdate={(prev, current) => prev.upstreamChannelId !== current.upstreamChannelId}>
                 {({ getFieldValue: getNestedFieldValue }) => {
                   const channelId = getNestedFieldValue("upstreamChannelId");
@@ -1223,7 +1228,7 @@ function ProductDrawer({ product, channels, open, onClose, onSaved }: { product:
                       <UpstreamChannelTags config={channel?.config ?? {}} />
                     </section>
                   ) : (
-                    <UpstreamConfigEditor showIdentity={false} />
+                    <UpstreamConfigEditor showIdentity={false} showVariables={false} />
                   );
                 }}
               </Form.Item>
@@ -1235,7 +1240,7 @@ function ProductDrawer({ product, channels, open, onClose, onSaved }: { product:
   );
 }
 
-function UpstreamConfigEditor({ showIdentity = true }: { showIdentity?: boolean }) {
+function UpstreamConfigEditor({ showIdentity = true, showVariables = true }: { showIdentity?: boolean; showVariables?: boolean }) {
   return (
     <section className="upstream-editor">
       <div className="upstream-editor-heading">
@@ -1253,6 +1258,11 @@ function UpstreamConfigEditor({ showIdentity = true }: { showIdentity?: boolean 
             <Input.Password placeholder="secret-token" />
           </Form.Item>
         </div>
+      )}
+      {showVariables && (
+        <Form.Item name={["upstreamConfig", "variablesText"]} label="自定义变量">
+          <Input.TextArea rows={3} placeholder="shopId: 1001&#10;region: CN" />
+        </Form.Item>
       )}
 
       <UpstreamRequestSection name="captcha" title="验证码" tone="green">
@@ -2108,6 +2118,7 @@ function upstreamConfigToForm(config: UpstreamConfig): UpstreamConfigFormValue {
   return {
     sku: config.sku ?? "",
     token: config.token ?? "",
+    variablesText: formatObjectText(config.variables),
     captcha: upstreamRequestToForm(config.captcha),
     precheck: upstreamRequestToForm(config.precheck),
     stock: upstreamRequestToForm(config.stock),
@@ -2179,6 +2190,7 @@ function normalizeUpstreamConfigForm(value: unknown): UpstreamConfig {
   return stripEmptyObject({
     sku: trimToUndefined(input.sku),
     token: trimToUndefined(input.token),
+    variables: normalizeTemplateVariablesForm(input.variablesText),
     captcha: normalizeUpstreamCaptchaRequestForm(input.captcha),
     precheck: normalizeUpstreamRequestForm(input.precheck),
     stock: normalizeUpstreamStockRequestForm(input.stock),
@@ -2231,6 +2243,26 @@ function normalizeUpstreamOrderRequestForm(value: UpstreamRequestFormValue | und
     deliveryPath: trimToUndefined(value?.deliveryPath),
     remoteOrderIdPath: trimToUndefined(value?.remoteOrderIdPath)
   }) as UpstreamOrderRequest;
+}
+
+function normalizeTemplateVariablesForm(value: unknown) {
+  const parsed = parseLooseObject(value, "自定义变量");
+  if (!parsed) {
+    return undefined;
+  }
+  const entries = Object.entries(parsed)
+    .map(([key, item]) => {
+      const normalizedValue = item === undefined || item === null
+        ? ""
+        : typeof item === "string"
+          ? item
+          : typeof item === "object"
+            ? JSON.stringify(item)
+            : String(item);
+      return [key.trim(), normalizedValue] as const;
+    })
+    .filter(([key]) => key);
+  return entries.length ? Object.fromEntries(entries) as Record<string, string> : undefined;
 }
 
 function normalizeExpectationForm(value: UpstreamRequestFormValue | undefined): HttpExpectation | undefined {

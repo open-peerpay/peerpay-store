@@ -155,6 +155,10 @@ describe("store services", () => {
     const channel = createUpstreamChannel(ctx, {
       name: "模板渠道",
       config: {
+        variables: {
+          channelShopId: "channel-001",
+          region: "CN"
+        },
         captcha: { enabled: true, method: "GET", url: "https://upstream.test/captcha" },
         precheck: { enabled: true, method: "POST", url: "https://upstream.test/precheck" },
         stock: { enabled: true, method: "POST", url: "https://upstream.test/stock", stockPath: "data.stock" },
@@ -171,7 +175,11 @@ describe("store services", () => {
       upstreamChannelId: channel!.id,
       upstreamConfig: {
         sku: "sku-001",
-        token: "token-001"
+        token: "token-001",
+        variables: {
+          shopId: "shop-001",
+          region: "US"
+        }
       }
     });
 
@@ -181,9 +189,21 @@ describe("store services", () => {
     expect(product?.upstreamConfig?.precheck?.url).toBe("https://upstream.test/precheck");
     expect(product?.upstreamConfig?.stock?.stockPath).toBe("data.stock");
     expect(product?.upstreamConfig?.order?.deliveryPath).toBe("data.secret");
+    expect(product?.upstreamConfig?.variables).toEqual({
+      channelShopId: "channel-001",
+      region: "US",
+      shopId: "shop-001"
+    });
 
     const raw = ctx.db.query("SELECT upstream_config AS config FROM products WHERE id = ?").get(product!.id) as { config: string };
-    expect(JSON.parse(raw.config)).toEqual({ sku: "sku-001", token: "token-001" });
+    expect(JSON.parse(raw.config)).toEqual({
+      sku: "sku-001",
+      token: "token-001",
+      variables: {
+        shopId: "shop-001",
+        region: "US"
+      }
+    });
 
     try {
       const publicProduct = await getPublicProductAvailability(ctx, "channel-product");
@@ -726,6 +746,9 @@ describe("store services", () => {
       upstreamConfig: {
         sku: "form-sku",
         token: "form-token",
+        variables: {
+          shopId: "shop-001"
+        },
         order: {
           enabled: true,
           method: "POST",
@@ -734,6 +757,8 @@ describe("store services", () => {
           body: {
             sku: "{{sku}}",
             orderId: "{{orderId}}",
+            shopId: "{{shopId}}",
+            price: "{{price}}",
             contact: "{{contact}}"
           },
           expect: { path: "ok", equals: true },
@@ -770,6 +795,8 @@ describe("store services", () => {
       expect(upstreamContentType).toContain("application/x-www-form-urlencoded");
       expect(upstreamBody).toContain("sku=form-sku");
       expect(upstreamBody).toContain(`orderId=${encodeURIComponent(result.order.id)}`);
+      expect(upstreamBody).toContain("shopId=shop-001");
+      expect(upstreamBody).toContain("price=21.00");
       expect(upstreamBody).toContain("contact=buyer%40example.com");
     } finally {
       restoreFetch();
