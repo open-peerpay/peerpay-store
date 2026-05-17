@@ -6,6 +6,7 @@ export type PaymentChannel = "alipay" | "wechat";
 export type OrderStatus = "pending_payment" | "paid" | "delivered" | "needs_manual" | "failed" | "cancelled";
 export type LogLevel = "info" | "warn" | "error";
 export type HttpBodyType = "json" | "form" | "raw";
+export type UpstreamVariableValue = string | number | boolean | null;
 
 export interface HttpExpectation {
   path?: string;
@@ -48,7 +49,7 @@ export interface UpstreamCaptchaRequest extends UpstreamHttpRequest {
 export interface UpstreamConfig {
   sku?: string;
   token?: string;
-  variables?: Record<string, string>;
+  variables?: Record<string, UpstreamVariableValue>;
   captcha?: UpstreamCaptchaRequest;
   precheck?: UpstreamHttpRequest;
   stock?: UpstreamStockRequest;

@@ -92,7 +92,7 @@ PeerPay 回调通过 HMAC-SHA256 验签后，Store 才会把订单从 `pending_p
 - `{{amount}}`
 
 每段上游请求都支持 `method`、`url`、`headers`、`body`、`timeoutMs` 和 `expect`。`expect.path` 会从 JSON 返回中取值，`expect.equals` 要求字段值一致，`expect.exists` 可判断字段存在或不存在；不配置 `equals`/`exists` 时要求字段为真值。POST/PUT/PATCH 请求可通过 `bodyType` 选择 `json`、`form` 或 `raw`，其中 `form` 会发送 `application/x-www-form-urlencoded`。
-`expect`、`successEquals` 和 `availableEquals` 都会先做模板渲染，所以可以直接写 `{{price}}` 这类变量。`variables` 支持自定义键值对，比如 `shopId`、`region`。
+`expect`、`successEquals` 和 `availableEquals` 都会先做模板渲染，所以可以直接写 `{{price}}` 或 `{{价格}}` 这类变量。管理后台的自定义变量输入框使用 ENV 格式，一行一个 `KEY=value`；带引号的值保留为字符串，例如 `价格="4.50"`，未引号的数字会保存为数字，例如 `stockLimit=1`。
 
 示例：
 
@@ -100,11 +100,15 @@ PeerPay 回调通过 HMAC-SHA256 验签后，Store 才会把订单从 `pending_p
 {
   "sku": "demo-sku",
   "token": "secret-token",
+  "variables": {
+    "价格": "4.50",
+    "stockLimit": 1
+  },
   "precheck": {
     "enabled": true,
     "method": "GET",
     "url": "https://upstream.example/api/precheck?sku={{sku}}",
-    "expect": { "path": "ok", "equals": true }
+    "expect": { "path": "data.price", "equals": "{{价格}}" }
   },
   "stock": {
     "enabled": true,

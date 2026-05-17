@@ -34,7 +34,8 @@ import type {
   UpstreamConfig,
   UpstreamHttpRequest,
   UpstreamOrderRequest,
-  UpstreamStockRequest
+  UpstreamStockRequest,
+  UpstreamVariableValue
 } from "../src/shared/types";
 
 export interface AppContext {
@@ -43,6 +44,7 @@ export interface AppContext {
 
 type ApiError = Error & { status?: number };
 type SqlBinding = string | number | bigint | boolean | null | Uint8Array;
+type TemplateVars = Record<string, UpstreamVariableValue>;
 
 interface ProductRow {
   id: number;
@@ -1060,7 +1062,13 @@ async function checkUpstreamAvailability(product: Product, options: Availability
     }
     try {
       const result = await runRequest(precheck, vars, "precheck");
-      if (!result.ok || !checkExpectation(precheck.expect, result.data, vars)) {
+      if (!result.ok) {
+        logUpstream("check", { kind: "precheck", check: "http", passed: false, status: result.status, reason: `HTTP ${result.status}` });
+        return { available: false, reason: "预检测不通过" };
+      }
+      const expectation = evaluateExpectation(precheck.expect, result.data, vars);
+      logExpectationCheck("precheck", expectation);
+      if (!expectation.passed) {
         return { available: false, reason: "预检测不通过" };
       }
     } catch {
@@ -1075,7 +1083,13 @@ async function checkUpstreamAvailability(product: Product, options: Availability
     }
     try {
       const result = await runRequest(stock, vars, "stock");
-      if (!result.ok || !checkStock(stock, result.data, vars)) {
+      if (!result.ok) {
+        logUpstream("check", { kind: "stock", check: "http", passed: false, status: result.status, reason: `HTTP ${result.status}` });
+        return { available: false, reason: "上游无库存" };
+      }
+      const stockCheck = evaluateStock(stock, result.data, vars);
+      logStockChecks(stockCheck);
+      if (!stockCheck.passed) {
         return { available: false, reason: "上游无库存" };
       }
     } catch {
@@ -1085,7 +1099,7 @@ async function checkUpstreamAvailability(product: Product, options: Availability
   return { available: true, reason: null };
 }
 
-async function fetchUpstreamCaptcha(config: UpstreamCaptchaRequest, vars: Record<string, string>): Promise<PublicCaptcha> {
+async function fetchUpstreamCaptcha(config: UpstreamCaptchaRequest, vars: TemplateVars): Promise<PublicCaptcha> {
   const result = await runRequest(config, vars, "captcha");
   if (!result.ok) {
     throw apiError(502, `验证码请求 HTTP ${result.status}`);
@@ -1150,10 +1164,10 @@ function hasPrefix(data: Uint8Array, prefix: number[]) {
   return prefix.every((byte, index) => data[index] === byte);
 }
 
-async function fetchCaptchaImageUrl(config: UpstreamCaptchaRequest, vars: Record<string, string>, imageUrl: string, token: string | null): Promise<PublicCaptcha> {
+async function fetchCaptchaImageUrl(config: UpstreamCaptchaRequest, vars: TemplateVars, imageUrl: string, token: string | null): Promise<PublicCaptcha> {
   const requestUrl = renderTemplate(config.url ?? "", vars);
   const url = new URL(renderTemplate(imageUrl, vars), requestUrl).toString();
-  const headers = renderTemplateObject(config.headers ?? {}, vars) as Record<string, string>;
+  const headers = renderTemplateStringRecord(config.headers ?? {}, vars);
   const startedAt = Date.now();
   logUpstream("request", { kind: "captcha", method: "GET", url, headers });
   try {
@@ -1193,14 +1207,14 @@ async function fetchCaptchaImageUrl(config: UpstreamCaptchaRequest, vars: Record
   }
 }
 
-async function runRequest(config: UpstreamHttpRequest, vars: Record<string, string>, kind: UpstreamRequestKind): Promise<RequestResult> {
+async function runRequest(config: UpstreamHttpRequest, vars: TemplateVars, kind: UpstreamRequestKind): Promise<RequestResult> {
   if (!config.url) {
     throw new Error("请求 URL 未配置");
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.max(1000, config.timeoutMs ?? 5000));
   const method = config.method ?? (config.body === undefined ? "GET" : "POST");
-  const headers = renderTemplateObject(config.headers ?? {}, vars) as Record<string, string>;
+  const headers = renderTemplateStringRecord(config.headers ?? {}, vars);
   const bodyValue = config.body === undefined ? undefined : renderTemplateObject(config.body, vars);
   const init: RequestInit = { method, headers, signal: controller.signal };
   let requestBody: string | undefined;
@@ -1287,7 +1301,7 @@ async function runRequest(config: UpstreamHttpRequest, vars: Record<string, stri
   }
 }
 
-function logUpstream(event: "request" | "response" | "error", payload: Record<string, unknown>) {
+function logUpstream(event: "request" | "response" | "error" | "check", payload: Record<string, unknown>) {
   const line = JSON.stringify({ at: nowIso(), event: `upstream.${event}`, ...payload });
   if (event === "error") {
     console.error(line);
@@ -1364,37 +1378,173 @@ function appendFormValue(params: URLSearchParams, key: string, value: unknown) {
   params.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
 }
 
-function checkExpectation(expectation: UpstreamHttpRequest["expect"], data: unknown, vars: Record<string, string>) {
+interface ExpectationCheck {
+  configured: boolean;
+  passed: boolean;
+  mode: "none" | "equals" | "exists" | "truthy";
+  path?: string;
+  actual?: unknown;
+  expected?: unknown;
+  exists?: boolean;
+  reason: string;
+}
+
+interface StockFieldCheck {
+  check: "expect" | "availablePath" | "stockPath";
+  passed: boolean;
+  path?: string;
+  actual?: unknown;
+  expected?: unknown;
+  actualType?: string;
+  expectedType?: string;
+  minStock?: number;
+  numericActual?: number | null;
+  reason: string;
+}
+
+function checkExpectation(expectation: UpstreamHttpRequest["expect"], data: unknown, vars: TemplateVars) {
+  return evaluateExpectation(expectation, data, vars).passed;
+}
+
+function evaluateExpectation(expectation: UpstreamHttpRequest["expect"], data: unknown, vars: TemplateVars): ExpectationCheck {
   const renderedExpectation = renderExpectation(expectation, vars);
   if (!renderedExpectation) {
-    return true;
+    return { configured: false, passed: true, mode: "none", reason: "expect 未配置" };
   }
   const value = renderedExpectation.path ? getPath(data, renderedExpectation.path) : data;
   if ("equals" in renderedExpectation) {
-    return sameJsonValue(value, renderedExpectation.equals);
+    const passed = sameJsonValue(value, renderedExpectation.equals);
+    return {
+      configured: true,
+      passed,
+      mode: "equals",
+      path: renderedExpectation.path,
+      actual: value,
+      expected: renderedExpectation.equals,
+      reason: passed ? "字段值匹配" : "字段值不匹配"
+    };
   }
   if ("exists" in renderedExpectation) {
-    return renderedExpectation.exists ? value !== undefined && value !== null : value === undefined || value === null;
+    const passed = renderedExpectation.exists ? value !== undefined && value !== null : value === undefined || value === null;
+    return {
+      configured: true,
+      passed,
+      mode: "exists",
+      path: renderedExpectation.path,
+      actual: value,
+      exists: renderedExpectation.exists,
+      reason: passed ? "字段存在性符合" : renderedExpectation.exists ? "字段不存在或为空" : "字段不应存在但已返回"
+    };
   }
-  return value !== undefined && value !== null && value !== false;
+  const passed = value !== undefined && value !== null && value !== false;
+  return {
+    configured: true,
+    passed,
+    mode: "truthy",
+    path: renderedExpectation.path,
+    actual: value,
+    reason: passed ? "字段为真值" : "字段不是真值"
+  };
 }
 
-function checkStock(config: UpstreamStockRequest, data: unknown, vars: Record<string, string>) {
-  if (!checkExpectation(config.expect, data, vars)) {
-    return false;
+function checkStock(config: UpstreamStockRequest, data: unknown, vars: TemplateVars) {
+  return evaluateStock(config, data, vars).passed;
+}
+
+function evaluateStock(config: UpstreamStockRequest, data: unknown, vars: TemplateVars) {
+  const checks: StockFieldCheck[] = [];
+  const expectation = evaluateExpectation(config.expect, data, vars);
+  if (expectation.configured) {
+    checks.push(expectationToStockFieldCheck(expectation));
+  }
+  if (!expectation.passed) {
+    return { passed: false, checks };
   }
   if (config.availablePath) {
     const value = getPath(data, config.availablePath);
-    return sameJsonValue(value, renderTemplateObject(config.availableEquals ?? true, vars));
+    const expected = renderTemplateObject(config.availableEquals ?? true, vars);
+    const passed = sameJsonValue(value, expected);
+    checks.push({
+      check: "availablePath",
+      passed,
+      path: config.availablePath,
+      actual: value,
+      expected,
+      actualType: valueType(value),
+      expectedType: valueType(expected),
+      reason: passed ? "可用字段匹配" : "可用字段不匹配"
+    });
+    return { passed, checks };
   }
   if (config.stockPath) {
-    const value = Number(getPath(data, config.stockPath));
-    return Number.isFinite(value) && value >= (config.minStock ?? 1);
+    const rawValue = getPath(data, config.stockPath);
+    const value = Number(rawValue);
+    const minStock = config.minStock ?? 1;
+    const passed = Number.isFinite(value) && value >= minStock;
+    checks.push({
+      check: "stockPath",
+      passed,
+      path: config.stockPath,
+      actual: rawValue,
+      actualType: valueType(rawValue),
+      minStock,
+      numericActual: Number.isFinite(value) ? value : null,
+      reason: passed ? "库存数量满足" : Number.isFinite(value) ? "库存数量低于最小值" : "库存字段不是数字"
+    });
+    return { passed, checks };
   }
-  return true;
+  return { passed: true, checks };
 }
 
-function checkOrderSuccess(config: UpstreamOrderRequest, data: unknown, vars: Record<string, string>) {
+function expectationToStockFieldCheck(expectation: ExpectationCheck): StockFieldCheck {
+  return {
+    check: "expect",
+    passed: expectation.passed,
+    path: expectation.path,
+    actual: expectation.actual,
+    expected: expectation.expected,
+    actualType: valueType(expectation.actual),
+    expectedType: expectation.mode === "equals" ? valueType(expectation.expected) : undefined,
+    reason: expectation.reason
+  };
+}
+
+function logExpectationCheck(kind: "precheck" | "stock", expectation: ExpectationCheck) {
+  if (!expectation.configured) {
+    return;
+  }
+  logUpstream("check", {
+    kind,
+    check: "expect",
+    passed: expectation.passed,
+    mode: expectation.mode,
+    path: expectation.path,
+    actual: expectation.actual,
+    expected: expectation.expected,
+    actualType: valueType(expectation.actual),
+    expectedType: valueType(expectation.expected),
+    exists: expectation.exists,
+    reason: expectation.reason
+  });
+}
+
+function logStockChecks(result: { checks: StockFieldCheck[] }) {
+  for (const check of result.checks) {
+    logUpstream("check", { kind: "stock", ...check });
+  }
+}
+
+function valueType(value: unknown) {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  return typeof value;
+}
+
+function checkOrderSuccess(config: UpstreamOrderRequest, data: unknown, vars: TemplateVars) {
   if (!config.successPath) {
     return checkExpectation(config.expect, data, vars);
   }
@@ -1405,7 +1555,7 @@ function checkOrderSuccess(config: UpstreamOrderRequest, data: unknown, vars: Re
   return Boolean(value);
 }
 
-function renderExpectation(expectation: UpstreamHttpRequest["expect"] | undefined, vars: Record<string, string>) {
+function renderExpectation(expectation: UpstreamHttpRequest["expect"] | undefined, vars: TemplateVars) {
   if (!expectation) {
     return undefined;
   }
@@ -1811,9 +1961,12 @@ function getPath(data: unknown, path: string) {
     }, data);
 }
 
-function renderTemplateObject(value: unknown, vars: Record<string, string>): unknown {
+const TEMPLATE_PATTERN = /\{\{\s*([^{}\s]+)\s*}}/g;
+const FULL_TEMPLATE_PATTERN = /^\s*\{\{\s*([^{}\s]+)\s*}}\s*$/;
+
+function renderTemplateObject(value: unknown, vars: TemplateVars): unknown {
   if (typeof value === "string") {
-    return renderTemplate(value, vars);
+    return renderTemplateValue(value, vars);
   }
   if (Array.isArray(value)) {
     return value.map((item) => renderTemplateObject(item, vars));
@@ -1824,8 +1977,29 @@ function renderTemplateObject(value: unknown, vars: Record<string, string>): unk
   return value;
 }
 
-function renderTemplate(value: string, vars: Record<string, string>) {
-  return value.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, key: string) => vars[key] ?? "");
+function renderTemplateStringRecord(value: Record<string, string>, vars: TemplateVars) {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, renderTemplate(item, vars)])
+  ) as Record<string, string>;
+}
+
+function renderTemplateValue(value: string, vars: TemplateVars) {
+  const fullMatch = value.match(FULL_TEMPLATE_PATTERN);
+  if (fullMatch) {
+    return Object.prototype.hasOwnProperty.call(vars, fullMatch[1]) ? vars[fullMatch[1]] : "";
+  }
+  return renderTemplate(value, vars);
+}
+
+function renderTemplate(value: string, vars: TemplateVars) {
+  return value.replace(TEMPLATE_PATTERN, (_, key: string) => stringifyTemplateValue(vars[key]));
+}
+
+function stringifyTemplateValue(value: unknown) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
 function normalizeUpstreamConfig(config: UpstreamConfig | null | undefined): UpstreamConfig | null {
@@ -1843,22 +2017,26 @@ function normalizeTemplateVariables(value: UpstreamConfig["variables"] | undefin
     return undefined;
   }
   const entries = Object.entries(value)
-    .map(([key, item]) => {
-      const normalizedValue = item === undefined || item === null
-        ? ""
-        : typeof item === "string"
-          ? item
-          : typeof item === "object"
-            ? JSON.stringify(item)
-            : String(item);
-      return [key.trim(), normalizedValue] as const;
-    })
+    .map(([key, item]) => [key.trim(), normalizeTemplateVariableValue(item)] as const)
     .filter(([key]) => key);
-  return entries.length ? Object.fromEntries(entries) as Record<string, string> : undefined;
+  return entries.length ? Object.fromEntries(entries) as Record<string, UpstreamVariableValue> : undefined;
+}
+
+function normalizeTemplateVariableValue(value: unknown): UpstreamVariableValue {
+  if (value === undefined) {
+    return "";
+  }
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : String(value);
+  }
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
 function mergeTemplateVariables(...sources: Array<UpstreamConfig["variables"] | undefined>) {
-  const merged: Record<string, string> = {};
+  const merged: Record<string, UpstreamVariableValue> = {};
   for (const source of sources) {
     const normalized = normalizeTemplateVariables(source);
     if (!normalized) {
@@ -1869,14 +2047,17 @@ function mergeTemplateVariables(...sources: Array<UpstreamConfig["variables"] | 
   return Object.keys(merged).length ? merged : undefined;
 }
 
-function renderUpstreamVariables(variables: UpstreamConfig["variables"] | undefined, vars: Record<string, string>) {
+function renderUpstreamVariables(variables: UpstreamConfig["variables"] | undefined, vars: TemplateVars) {
   const normalized = normalizeTemplateVariables(variables);
   if (!normalized) {
     return {};
   }
   return Object.fromEntries(
-    Object.entries(normalized).map(([key, value]) => [key, renderTemplate(value, vars)])
-  ) as Record<string, string>;
+    Object.entries(normalized).map(([key, value]) => [
+      key,
+      typeof value === "string" ? renderTemplateValue(value, vars) : value
+    ])
+  ) as TemplateVars;
 }
 
 function productTemplateVars(product: Product, config: UpstreamConfig | null = product.upstreamConfig) {

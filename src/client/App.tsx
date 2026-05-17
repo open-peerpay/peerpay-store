@@ -74,7 +74,8 @@ import type {
   UpstreamConfig,
   UpstreamHttpRequest,
   UpstreamOrderRequest,
-  UpstreamStockRequest
+  UpstreamStockRequest,
+  UpstreamVariableValue
 } from "../shared/types";
 import {
   addProductCards,
@@ -1211,7 +1212,7 @@ function ProductDrawer({ product, channels, open, onClose, onSaved }: { product:
                 </Form.Item>
               </div>
               <Form.Item name={["upstreamConfig", "variablesText"]} label="自定义变量">
-                <Input.TextArea rows={3} placeholder="shopId: 1001&#10;region: CN" />
+                <Input.TextArea rows={3} placeholder={'价格="4.50"\n库存阈值=1\nregion=CN'} />
               </Form.Item>
               <Form.Item noStyle shouldUpdate={(prev, current) => prev.upstreamChannelId !== current.upstreamChannelId}>
                 {({ getFieldValue: getNestedFieldValue }) => {
@@ -1261,7 +1262,7 @@ function UpstreamConfigEditor({ showIdentity = true, showVariables = true }: { s
       )}
       {showVariables && (
         <Form.Item name={["upstreamConfig", "variablesText"]} label="自定义变量">
-          <Input.TextArea rows={3} placeholder="shopId: 1001&#10;region: CN" />
+          <Input.TextArea rows={3} placeholder={'价格="4.50"\n库存阈值=1\nregion=CN'} />
         </Form.Item>
       )}
 
@@ -2118,7 +2119,7 @@ function upstreamConfigToForm(config: UpstreamConfig): UpstreamConfigFormValue {
   return {
     sku: config.sku ?? "",
     token: config.token ?? "",
-    variablesText: formatObjectText(config.variables),
+    variablesText: formatEnvVariablesText(config.variables),
     captcha: upstreamRequestToForm(config.captcha),
     precheck: upstreamRequestToForm(config.precheck),
     stock: upstreamRequestToForm(config.stock),
@@ -2246,23 +2247,14 @@ function normalizeUpstreamOrderRequestForm(value: UpstreamRequestFormValue | und
 }
 
 function normalizeTemplateVariablesForm(value: unknown) {
-  const parsed = parseLooseObject(value, "自定义变量");
+  const parsed = parseEnvVariablesText(value, "自定义变量");
   if (!parsed) {
     return undefined;
   }
   const entries = Object.entries(parsed)
-    .map(([key, item]) => {
-      const normalizedValue = item === undefined || item === null
-        ? ""
-        : typeof item === "string"
-          ? item
-          : typeof item === "object"
-            ? JSON.stringify(item)
-            : String(item);
-      return [key.trim(), normalizedValue] as const;
-    })
+    .map(([key, item]) => [key.trim(), item] as const)
     .filter(([key]) => key);
-  return entries.length ? Object.fromEntries(entries) as Record<string, string> : undefined;
+  return entries.length ? Object.fromEntries(entries) as Record<string, UpstreamVariableValue> : undefined;
 }
 
 function normalizeExpectationForm(value: UpstreamRequestFormValue | undefined): HttpExpectation | undefined {
@@ -2321,6 +2313,86 @@ function parseFormQueryText(text: string) {
     body[key] = Array.isArray(current) ? [...current, value] : [current, value];
   });
   return body;
+}
+
+function parseEnvVariablesText(value: unknown, label: string) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) {
+    return undefined;
+  }
+  const entries: Array<[string, UpstreamVariableValue]> = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const normalizedLine = line.startsWith("export ") ? line.slice(7).trim() : line;
+    const separatorIndex = normalizedLine.indexOf("=");
+    if (separatorIndex <= 0) {
+      throw new Error(`${label} 行格式必须是 KEY=value`);
+    }
+    const key = normalizedLine.slice(0, separatorIndex).trim();
+    if (!key || /\s/.test(key)) {
+      throw new Error(`${label} 变量名不能包含空白字符`);
+    }
+    entries.push([key, parseEnvVariableValue(normalizedLine.slice(separatorIndex + 1).trim(), label)]);
+  }
+  return entries.length ? Object.fromEntries(entries) as Record<string, UpstreamVariableValue> : undefined;
+}
+
+function parseEnvVariableValue(value: string, label: string): UpstreamVariableValue {
+  if (!value) {
+    return "";
+  }
+  if (value.startsWith("\"") || value.startsWith("'")) {
+    return parseQuotedEnvVariableValue(value, label);
+  }
+  const text = value.replace(/\s+#.*$/, "").trim();
+  if (!text) {
+    return "";
+  }
+  if (text === "true") {
+    return true;
+  }
+  if (text === "false") {
+    return false;
+  }
+  if (text === "null") {
+    return null;
+  }
+  if (/^[+-]?(?:\d+|\d*\.\d+)(?:[eE][+-]?\d+)?$/.test(text)) {
+    return Number(text);
+  }
+  return text;
+}
+
+function parseQuotedEnvVariableValue(value: string, label: string) {
+  const quote = value[0];
+  let escaped = false;
+  for (let index = 1; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote === "\"" && !escaped && char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (!escaped && char === quote) {
+      const quoted = value.slice(0, index + 1);
+      const trailing = value.slice(index + 1).trim();
+      if (trailing && !trailing.startsWith("#")) {
+        throw new Error(`${label} 引号后只能追加注释`);
+      }
+      if (quote === "'") {
+        return quoted.slice(1, -1);
+      }
+      try {
+        return JSON.parse(quoted) as string;
+      } catch {
+        throw new Error(`${label} 双引号字符串格式不正确`);
+      }
+    }
+    escaped = false;
+  }
+  throw new Error(`${label} 字符串缺少结束引号`);
 }
 
 function parseLooseObject(value: unknown, label: string) {
@@ -2411,6 +2483,20 @@ function stripEmptyObject<T extends Record<string, unknown>>(value: T) {
     }
     return true;
   }));
+}
+
+function formatEnvVariablesText(value: Record<string, UpstreamVariableValue> | undefined) {
+  if (!value || !Object.keys(value).length) {
+    return "";
+  }
+  return Object.entries(value).map(([key, item]) => `${key}=${formatEnvVariableValue(item)}`).join("\n");
+}
+
+function formatEnvVariableValue(value: UpstreamVariableValue) {
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  return String(value);
 }
 
 function formatObjectText(value: Record<string, string> | undefined) {

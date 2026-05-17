@@ -48,6 +48,9 @@ export const DEFAULT_LOOKUP_METHODS: ContactType[] = ["contact", "phone", "qq", 
 
 export const DEFAULT_UPSTREAM_CONFIG_EXAMPLE = {
   sku: "demo-sku",
+  variables: {
+    价格: "4.50"
+  },
   captcha: {
     enabled: false,
     method: "GET",
@@ -60,7 +63,7 @@ export const DEFAULT_UPSTREAM_CONFIG_EXAMPLE = {
     enabled: false,
     method: "GET",
     url: "https://upstream.example/api/precheck?sku={{sku}}",
-    expect: { path: "ok", equals: true }
+    expect: { path: "data.price", equals: "{{价格}}" }
   },
   stock: {
     enabled: false,

@@ -329,7 +329,7 @@ describe("store services", () => {
     const restorePeerPay = mockPeerPayFetch();
     const restoreFetch = mockFetch(async (url) => {
       if (url.origin === "https://upstream.test" && url.pathname === "/precheck") {
-        return Response.json({ data: { price: "19.00" } });
+        return Response.json({ data: { price: "4.50" } });
       }
       return undefined;
     });
@@ -341,11 +341,15 @@ describe("store services", () => {
       deliveryMode: "upstream",
       upstreamConfig: {
         sku: "template-precheck",
+        variables: {
+          价格: "4.50",
+          numericPrice: 4.5
+        },
         precheck: {
           enabled: true,
           method: "GET",
           url: "https://upstream.test/precheck?sku={{sku}}",
-          expect: { path: "data.price", equals: "{{price}}" }
+          expect: { path: "data.price", equals: "{{价格}}" }
         },
         order: { enabled: true, url: "https://upstream.test/order" }
       }
@@ -363,6 +367,83 @@ describe("store services", () => {
     } finally {
       restoreFetch();
       restorePeerPay();
+    }
+  });
+
+  test("logs upstream precheck and stock field check details", async () => {
+    const ctx = createTestContext();
+    const lines: string[] = [];
+    const originalInfo = console.info;
+    console.info = (message?: unknown) => {
+      lines.push(String(message));
+    };
+    const restoreFetch = mockFetch(async (url) => {
+      if (url.origin === "https://upstream.test" && url.pathname === "/precheck") {
+        return Response.json({ data: { price: "4.50" } });
+      }
+      if (url.origin === "https://upstream.test" && url.pathname === "/stock") {
+        return Response.json({ data: { price: "4.50", stock: "0" } });
+      }
+      return undefined;
+    });
+    createProduct(ctx, {
+      title: "库存日志商品",
+      slug: "stock-log",
+      price: "19.00",
+      status: "active",
+      deliveryMode: "upstream",
+      upstreamConfig: {
+        variables: {
+          价格: "4.50"
+        },
+        precheck: {
+          enabled: true,
+          method: "GET",
+          url: "https://upstream.test/precheck",
+          expect: { path: "data.price", equals: "{{价格}}" }
+        },
+        stock: {
+          enabled: true,
+          method: "GET",
+          url: "https://upstream.test/stock",
+          expect: { path: "data.price", equals: "{{价格}}" },
+          stockPath: "data.stock",
+          minStock: 1
+        },
+        order: { enabled: true, url: "https://upstream.test/order" }
+      }
+    });
+
+    try {
+      const product = await getPublicProduct(ctx, "stock-log");
+      expect(product?.available).toBe(false);
+      expect(product?.availabilityReason).toBe("无库存");
+
+      const checkLogs = lines
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((line) => line.event === "upstream.check");
+      const precheckExpect = checkLogs.find((line) => line.kind === "precheck" && line.check === "expect");
+      expect(precheckExpect?.passed).toBe(true);
+      expect(precheckExpect?.path).toBe("data.price");
+      expect(precheckExpect?.actual).toBe("4.50");
+      expect(precheckExpect?.expected).toBe("4.50");
+      expect(precheckExpect?.actualType).toBe("string");
+      expect(precheckExpect?.expectedType).toBe("string");
+
+      const stockExpect = checkLogs.find((line) => line.kind === "stock" && line.check === "expect");
+      expect(stockExpect?.passed).toBe(true);
+      expect(stockExpect?.path).toBe("data.price");
+
+      const stockPath = checkLogs.find((line) => line.kind === "stock" && line.check === "stockPath");
+      expect(stockPath?.passed).toBe(false);
+      expect(stockPath?.path).toBe("data.stock");
+      expect(stockPath?.actual).toBe("0");
+      expect(stockPath?.numericActual).toBe(0);
+      expect(stockPath?.minStock).toBe(1);
+      expect(stockPath?.reason).toBe("库存数量低于最小值");
+    } finally {
+      restoreFetch();
+      console.info = originalInfo;
     }
   });
 
