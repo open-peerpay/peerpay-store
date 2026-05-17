@@ -169,6 +169,14 @@ const IMAGE_MIME_EXTENSIONS: Record<string, string> = {
   "image/png": ".png",
   "image/webp": ".webp"
 };
+const UPSTREAM_MAINTENANCE_PATTERNS = [
+  /余额不足/,
+  /服务维护/,
+  /维护中/,
+  /系统维护/,
+  /停服/,
+  /暂停/
+];
 
 export function createAppContext(): AppContext {
   const ctx = { db: createDatabase() };
@@ -850,11 +858,17 @@ async function fulfillUpstreamOrder(ctx: AppContext, order: Order, product: Prod
   const vars = orderTemplateVars(product, order);
   try {
     const result = await runRequest(request, vars, "order");
+    const maintenanceReason = detectUpstreamMaintenance(result);
+    if (maintenanceReason) {
+      const maintenance = updateOrderMaintenance(ctx, order.id, maintenanceReason, result);
+      await notifyFeishu(ctx, "PeerPay Store 上游服务维护中", formatOrderNotice(maintenance));
+      return maintenance;
+    }
     if (!result.ok) {
       throw new Error(`上游 HTTP ${result.status}`);
     }
 
-    const success = checkOrderSuccess(request, result.data);
+    const success = checkOrderSuccess(request, result.data, vars);
     const remoteOrderId = stringifyValue(request.remoteOrderIdPath ? getPath(result.data, request.remoteOrderIdPath) : null);
     const delivery = stringifyValue(request.deliveryPath ? getPath(result.data, request.deliveryPath) : null)
       ?? remoteOrderId
@@ -966,6 +980,22 @@ function updateOrderDelivered(ctx: AppContext, id: string, deliveryPayload: stri
 }
 
 function updateOrderManual(ctx: AppContext, id: string, manualReason: string, upstreamResponse?: unknown, upstreamOrderId?: string | null) {
+  return updateOrderIssue(ctx, id, manualReason, upstreamResponse, upstreamOrderId, "order.manual", `订单 ${id} 需要人工介入`);
+}
+
+function updateOrderMaintenance(ctx: AppContext, id: string, manualReason: string, upstreamResponse?: unknown, upstreamOrderId?: string | null) {
+  return updateOrderIssue(ctx, id, manualReason, upstreamResponse, upstreamOrderId, "order.maintenance", `订单 ${id} 上游服务维护中`);
+}
+
+function updateOrderIssue(
+  ctx: AppContext,
+  id: string,
+  manualReason: string,
+  upstreamResponse?: unknown,
+  upstreamOrderId?: string | null,
+  logAction: "order.manual" | "order.maintenance" = "order.manual",
+  logMessage = `订单 ${id} 需要人工介入`
+) {
   const at = nowIso();
   ctx.db.query(`
     UPDATE orders
@@ -979,7 +1009,7 @@ function updateOrderManual(ctx: AppContext, id: string, manualReason: string, up
     at,
     id
   );
-  writeLog(ctx, "warn", "order.manual", `订单 ${id} 需要人工介入`, { orderId: id, manualReason });
+  writeLog(ctx, "warn", logAction, logMessage, { orderId: id, manualReason });
   const order = getOrder(ctx, id);
   if (!order) {
     throw apiError(500, "订单更新失败");
@@ -1030,7 +1060,7 @@ async function checkUpstreamAvailability(product: Product, options: Availability
     }
     try {
       const result = await runRequest(precheck, vars, "precheck");
-      if (!result.ok || !checkExpectation(precheck.expect, result.data)) {
+      if (!result.ok || !checkExpectation(precheck.expect, result.data, vars)) {
         return { available: false, reason: "预检测不通过" };
       }
     } catch {
@@ -1045,7 +1075,7 @@ async function checkUpstreamAvailability(product: Product, options: Availability
     }
     try {
       const result = await runRequest(stock, vars, "stock");
-      if (!result.ok || !checkStock(stock, result.data)) {
+      if (!result.ok || !checkStock(stock, result.data, vars)) {
         return { available: false, reason: "上游无库存" };
       }
     } catch {
@@ -1334,27 +1364,28 @@ function appendFormValue(params: URLSearchParams, key: string, value: unknown) {
   params.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
 }
 
-function checkExpectation(expectation: UpstreamHttpRequest["expect"], data: unknown) {
-  if (!expectation) {
+function checkExpectation(expectation: UpstreamHttpRequest["expect"], data: unknown, vars: Record<string, string>) {
+  const renderedExpectation = renderExpectation(expectation, vars);
+  if (!renderedExpectation) {
     return true;
   }
-  const value = expectation.path ? getPath(data, expectation.path) : data;
-  if ("equals" in expectation) {
-    return sameJsonValue(value, expectation.equals);
+  const value = renderedExpectation.path ? getPath(data, renderedExpectation.path) : data;
+  if ("equals" in renderedExpectation) {
+    return sameJsonValue(value, renderedExpectation.equals);
   }
-  if ("exists" in expectation) {
-    return expectation.exists ? value !== undefined && value !== null : value === undefined || value === null;
+  if ("exists" in renderedExpectation) {
+    return renderedExpectation.exists ? value !== undefined && value !== null : value === undefined || value === null;
   }
   return value !== undefined && value !== null && value !== false;
 }
 
-function checkStock(config: UpstreamStockRequest, data: unknown) {
-  if (!checkExpectation(config.expect, data)) {
+function checkStock(config: UpstreamStockRequest, data: unknown, vars: Record<string, string>) {
+  if (!checkExpectation(config.expect, data, vars)) {
     return false;
   }
   if (config.availablePath) {
     const value = getPath(data, config.availablePath);
-    return sameJsonValue(value, config.availableEquals ?? true);
+    return sameJsonValue(value, renderTemplateObject(config.availableEquals ?? true, vars));
   }
   if (config.stockPath) {
     const value = Number(getPath(data, config.stockPath));
@@ -1363,15 +1394,47 @@ function checkStock(config: UpstreamStockRequest, data: unknown) {
   return true;
 }
 
-function checkOrderSuccess(config: UpstreamOrderRequest, data: unknown) {
+function checkOrderSuccess(config: UpstreamOrderRequest, data: unknown, vars: Record<string, string>) {
   if (!config.successPath) {
-    return checkExpectation(config.expect, data);
+    return checkExpectation(config.expect, data, vars);
   }
   const value = getPath(data, config.successPath);
   if ("successEquals" in config) {
-    return sameJsonValue(value, config.successEquals);
+    return sameJsonValue(value, renderTemplateObject(config.successEquals, vars));
   }
   return Boolean(value);
+}
+
+function renderExpectation(expectation: UpstreamHttpRequest["expect"] | undefined, vars: Record<string, string>) {
+  if (!expectation) {
+    return undefined;
+  }
+  return renderTemplateObject(expectation, vars) as UpstreamHttpRequest["expect"];
+}
+
+function detectUpstreamMaintenance(result: RequestResult) {
+  const text = [result.text, extractUpstreamText(result.data)].filter(Boolean).join("\n");
+  if (!text) {
+    return null;
+  }
+  if (!UPSTREAM_MAINTENANCE_PATTERNS.some((pattern) => pattern.test(text))) {
+    return null;
+  }
+  return /余额不足/.test(text) ? "上游服务维护中（余额不足）" : "上游服务维护中";
+}
+
+function extractUpstreamText(data: unknown) {
+  if (!data || typeof data !== "object") {
+    return typeof data === "string" ? data : "";
+  }
+  const record = data as Record<string, unknown>;
+  for (const key of ["msg", "message", "error", "detail"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return "";
 }
 
 async function notifyFeishu(ctx: AppContext, title: string, text: string) {

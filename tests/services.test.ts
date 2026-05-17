@@ -304,6 +304,48 @@ describe("store services", () => {
     }
   });
 
+  test("renders template variables inside upstream expect values", async () => {
+    const ctx = createTestContext();
+    const restorePeerPay = mockPeerPayFetch();
+    const restoreFetch = mockFetch(async (url) => {
+      if (url.origin === "https://upstream.test" && url.pathname === "/precheck") {
+        return Response.json({ data: { price: "19.00" } });
+      }
+      return undefined;
+    });
+    createProduct(ctx, {
+      title: "模板预检商品",
+      slug: "template-precheck",
+      price: "19.00",
+      status: "active",
+      deliveryMode: "upstream",
+      upstreamConfig: {
+        sku: "template-precheck",
+        precheck: {
+          enabled: true,
+          method: "GET",
+          url: "https://upstream.test/precheck?sku={{sku}}",
+          expect: { path: "data.price", equals: "{{price}}" }
+        },
+        order: { enabled: true, url: "https://upstream.test/order" }
+      }
+    });
+
+    try {
+      ctx.db.query("INSERT INTO app_settings(key, value, updated_at) VALUES ('peerpay_base_url', ?, ?)").run("http://peerpay.test", new Date().toISOString());
+      const result = await createOrder(ctx, {
+        slug: "template-precheck",
+        contactValue: "buyer@example.com",
+        paymentChannel: "alipay"
+      }, "http://store.test/api/public/orders");
+
+      expect(result.order.status).toBe("pending_payment");
+    } finally {
+      restoreFetch();
+      restorePeerPay();
+    }
+  });
+
   test("runs upstream precheck on product detail instead of public list", async () => {
     const ctx = createTestContext();
     let precheckCalls = 0;
@@ -509,6 +551,62 @@ describe("store services", () => {
       expect(upstreamOrderBody).toContain("captchaToken=captcha-token-001");
     } finally {
       restoreFetch();
+    }
+  });
+
+  test("records upstream balance shortage as service maintenance", async () => {
+    const ctx = createTestContext();
+    const restorePeerPay = mockPeerPayFetch();
+    const restoreFetch = mockFetch(async (url, init) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST" && url.origin === "https://upstream.test" && url.pathname === "/order") {
+        return Response.json({ code: 0, msg: "余额不足" });
+      }
+      return undefined;
+    });
+    createProduct(ctx, {
+      title: "余额不足商品",
+      slug: "balance-shortage",
+      price: "19.00",
+      status: "active",
+      deliveryMode: "upstream",
+      upstreamConfig: {
+        sku: "balance-shortage",
+        order: {
+          enabled: true,
+          method: "POST",
+          url: "https://upstream.test/order"
+        }
+      }
+    });
+
+    try {
+      ctx.db.query("INSERT INTO app_settings(key, value, updated_at) VALUES ('peerpay_base_url', ?, ?)").run("http://peerpay.test", new Date().toISOString());
+      const result = await createOrder(ctx, {
+        slug: "balance-shortage",
+        contactValue: "buyer@example.com",
+        paymentChannel: "alipay"
+      }, "http://store.test/api/public/orders");
+      const secret = ctx.db.query("SELECT peerpay_callback_secret AS secret FROM orders WHERE id = ?").get(result.order.id) as { secret: string };
+      const payload = {
+        orderId: result.order.peerpayOrderId!,
+        merchantOrderId: result.order.id,
+        paymentAccountCode: "alipay-a",
+        paymentChannel: "alipay" as const,
+        status: "paid",
+        requestedAmount: "19.00",
+        actualAmount: "19.00",
+        paidAt: "2026-05-17T04:32:24.000Z"
+      };
+      const sign = signPeerPayPayload(payload, secret.secret);
+      const callback = await handlePeerPayCallback(ctx, { ...payload, sign }, sign);
+
+      expect(callback.order.status).toBe("needs_manual");
+      expect(callback.order.manualReason).toContain("服务维护");
+      expect(callback.order.manualReason).toContain("余额不足");
+    } finally {
+      restoreFetch();
+      restorePeerPay();
     }
   });
 
