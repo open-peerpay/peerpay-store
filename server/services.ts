@@ -21,6 +21,7 @@ import type {
   PickupOpenMode,
   Product,
   ProductCard,
+  ProductCardSecret,
   ProductStatus,
   PublicCaptcha,
   PublicProduct,
@@ -541,13 +542,25 @@ export function addCards(ctx: AppContext, productId: number, input: AddCardsInpu
   if (!cards.length) {
     throw apiError(400, "请输入至少一条卡密");
   }
+  const seenCards = new Set<string>();
+  const uniqueCards = cards.filter((card) => {
+    if (seenCards.has(card)) {
+      return false;
+    }
+    seenCards.add(card);
+    return true;
+  });
+  const existingRows = ctx.db.query("SELECT secret FROM product_cards WHERE product_id = ?").all(productId) as Array<{ secret: string }>;
+  const existingSecrets = new Set(existingRows.map((row) => row.secret));
+  const newCards = uniqueCards.filter((card) => !existingSecrets.has(card));
   const at = nowIso();
   const insert = ctx.db.query("INSERT INTO product_cards(product_id, secret, status, created_at) VALUES (?, ?, 'available', ?)");
-  for (const card of cards) {
+  for (const card of newCards) {
     insert.run(productId, card, at);
   }
-  writeLog(ctx, "info", "cards.add", `商品 ${product.title} 新增 ${cards.length} 条卡密`, { productId, count: cards.length });
-  return { saved: cards.length, availableStock: countCards(ctx, productId) };
+  const skippedDuplicates = cards.length - newCards.length;
+  writeLog(ctx, "info", "cards.add", `商品 ${product.title} 新增 ${newCards.length} 条卡密`, { productId, count: newCards.length, skippedDuplicates });
+  return { saved: newCards.length, skippedDuplicates, availableStock: countCards(ctx, productId) };
 }
 
 export function listCards(ctx: AppContext, productId: number): ProductCard[] {
@@ -561,6 +574,26 @@ export function listCards(ctx: AppContext, productId: number): ProductCard[] {
     createdAt: row.created_at,
     deliveredAt: row.delivered_at
   }));
+}
+
+export function getCardSecret(ctx: AppContext, productId: number, cardId: number): ProductCardSecret {
+  const row = ctx.db.query("SELECT id, product_id, secret FROM product_cards WHERE product_id = ? AND id = ?")
+    .get(productId, cardId) as Pick<ProductCardRow, "id" | "product_id" | "secret"> | null;
+  if (!row) {
+    throw apiError(404, "卡密不存在");
+  }
+  return { id: row.id, productId: row.product_id, secret: row.secret };
+}
+
+export function deleteCard(ctx: AppContext, productId: number, cardId: number) {
+  const row = ctx.db.query("SELECT id, secret FROM product_cards WHERE product_id = ? AND id = ?")
+    .get(productId, cardId) as Pick<ProductCardRow, "id" | "secret"> | null;
+  if (!row) {
+    throw apiError(404, "卡密不存在");
+  }
+  ctx.db.query("DELETE FROM product_cards WHERE product_id = ? AND id = ?").run(productId, cardId);
+  writeLog(ctx, "info", "cards.delete", `删除商品 ${productId} 的卡密 ${cardId}`, { productId, cardId });
+  return { ok: true, availableStock: countCards(ctx, productId) };
 }
 
 export async function createOrder(ctx: AppContext, input: CreateOrderInput, requestUrl?: string): Promise<CreateOrderResult> {
@@ -1894,7 +1927,7 @@ function normalizeStoreAds(value: StoreAd[]) {
 
 function normalizeCards(value: string[] | string) {
   const items = Array.isArray(value) ? value : value.split(/\r?\n/);
-  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+  return items.map((item) => item.trim()).filter(Boolean);
 }
 
 function normalizeSlug(value: string) {

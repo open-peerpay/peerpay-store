@@ -1,5 +1,6 @@
 import type {
   AddCardsInput,
+  AddCardsResult,
   AdminSessionState,
   CreateOrderInput,
   CreateOrderResult,
@@ -10,6 +11,7 @@ import type {
   Page,
   Product,
   ProductCard,
+  ProductCardSecret,
   ProductStatus,
   PublicCaptcha,
   PublicProduct,
@@ -122,11 +124,19 @@ export function setProductStatus(id: number, status: ProductStatus) {
 }
 
 export function addProductCards(id: number, input: AddCardsInput) {
-  return request<{ saved: number; availableStock: number }>(`/api/admin/products/${id}/cards`, { method: "POST", body: JSON.stringify(input) });
+  return request<AddCardsResult>(`/api/admin/products/${id}/cards`, { method: "POST", body: JSON.stringify(input) });
 }
 
 export function listProductCards(id: number) {
   return request<ProductCard[]>(`/api/admin/products/${id}/cards`);
+}
+
+export function getProductCardSecret(productId: number, cardId: number) {
+  return request<ProductCardSecret>(`/api/admin/products/${productId}/cards/${cardId}`);
+}
+
+export function deleteProductCard(productId: number, cardId: number) {
+  return request<{ ok: boolean; availableStock: number }>(`/api/admin/products/${productId}/cards/${cardId}`, { method: "DELETE" });
 }
 
 export function updateOrderStatus(id: string, status: OrderStatus, manualReason?: string, deliveryPayload?: string) {

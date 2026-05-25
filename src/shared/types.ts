@@ -239,3 +239,15 @@ export interface CreateOrderResult {
 export interface AddCardsInput {
   cards: string[] | string;
 }
+
+export interface AddCardsResult {
+  saved: number;
+  skippedDuplicates: number;
+  availableStock: number;
+}
+
+export interface ProductCardSecret {
+  id: number;
+  productId: number;
+  secret: string;
+}

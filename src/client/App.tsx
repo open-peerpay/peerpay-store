@@ -10,6 +10,7 @@ import {
   InputNumber,
   Layout,
   Menu,
+  Popconfirm,
   Radio,
   Select,
   Space,
@@ -32,6 +33,7 @@ import {
   CompressOutlined,
   CopyOutlined,
   DeleteOutlined,
+  EyeOutlined,
   FileSearchOutlined,
   GlobalOutlined,
   LinkOutlined,
@@ -66,6 +68,7 @@ import type {
   PaymentChannel,
   PickupOpenMode,
   Product,
+  ProductCard,
   ProductStatus,
   PublicCaptcha,
   PublicProduct,
@@ -86,7 +89,9 @@ import {
   createUpstreamChannel,
   createProduct,
   createPublicOrder,
+  deleteProductCard,
   deleteUpstreamChannel,
+  getProductCardSecret,
   getAdminSession,
   listProductCards,
   loadAdminSnapshot,
@@ -1431,16 +1436,59 @@ function UpstreamExpectationFields({ name }: { name: UpstreamRequestKey }) {
 }
 
 function CardsDrawer({ product, open, onClose, onSaved }: { product: Product | null; open: boolean; onClose: () => void; onSaved: () => Promise<void> }) {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const [cards, setCards] = useState("");
-  const [recentCards, setRecentCards] = useState<Array<{ id: number; secretPreview: string; status: string }>>([]);
+  const [recentCards, setRecentCards] = useState<ProductCard[]>([]);
+  const [viewingCardId, setViewingCardId] = useState<number | null>(null);
+  const [deletingCardId, setDeletingCardId] = useState<number | null>(null);
+
+  const refreshCards = useCallback(async () => {
+    if (!product) {
+      setRecentCards([]);
+      return;
+    }
+    setRecentCards(await listProductCards(product.id));
+  }, [product]);
 
   useEffect(() => {
+    refreshCards().catch(() => setRecentCards([]));
+  }, [refreshCards]);
+
+  const handleViewSecret = async (cardId: number) => {
     if (!product) {
       return;
     }
-    listProductCards(product.id).then(setRecentCards).catch(() => setRecentCards([]));
-  }, [product]);
+    setViewingCardId(cardId);
+    try {
+      const result = await getProductCardSecret(product.id, cardId);
+      modal.info({
+        title: "卡密原文",
+        content: <Paragraph copyable className="secret-plain-text">{result.secret}</Paragraph>,
+        okText: "关闭"
+      });
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "读取失败");
+    } finally {
+      setViewingCardId(null);
+    }
+  };
+
+  const handleDeleteCard = async (cardId: number) => {
+    if (!product) {
+      return;
+    }
+    setDeletingCardId(cardId);
+    try {
+      await deleteProductCard(product.id, cardId);
+      message.success("卡密已删除");
+      await onSaved();
+      await refreshCards();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "删除失败");
+    } finally {
+      setDeletingCardId(null);
+    }
+  };
 
   return (
     <Drawer title={product ? `${product.title} 卡密库存` : "卡密库存"} open={open} onClose={onClose} size={560} destroyOnHidden>
@@ -1453,11 +1501,17 @@ function CardsDrawer({ product, open, onClose, onSaved }: { product: Product | n
             return;
           }
           try {
-            await addProductCards(product.id, { cards });
-            message.success("卡密已入库");
+            const result = await addProductCards(product.id, { cards });
+            if (result.saved > 0 && result.skippedDuplicates > 0) {
+              message.success(`已入库 ${result.saved} 条，过滤重复 ${result.skippedDuplicates} 条`);
+            } else if (result.saved > 0) {
+              message.success(`已入库 ${result.saved} 条卡密`);
+            } else {
+              message.warning(`没有新卡密入库，过滤重复 ${result.skippedDuplicates} 条`);
+            }
             setCards("");
             await onSaved();
-            setRecentCards(await listProductCards(product.id));
+            await refreshCards();
           } catch (error) {
             message.error(error instanceof Error ? error.message : "入库失败");
           }
@@ -1468,8 +1522,30 @@ function CardsDrawer({ product, open, onClose, onSaved }: { product: Product | n
       <div className="mini-list">
         {recentCards.map((card) => (
           <div key={card.id} className="mini-row">
-            <Text>{card.secretPreview}</Text>
-            <StatusTag value={card.status} text={card.status === "available" ? "可用" : "已发货"} />
+            <Text className="mini-secret">{card.secretPreview}</Text>
+            <Space size={8} wrap>
+              <StatusTag value={card.status} text={card.status === "available" ? "可用" : "已发货"} />
+              <Button
+                size="small"
+                icon={<EyeOutlined />}
+                loading={viewingCardId === card.id}
+                onClick={() => void handleViewSecret(card.id)}
+              >
+                原文
+              </Button>
+              <Popconfirm
+                title="删除卡密？"
+                description="删除后不会再出现在库存列表中。"
+                okText="删除"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+                onConfirm={() => void handleDeleteCard(card.id)}
+              >
+                <Button size="small" danger icon={<DeleteOutlined />} loading={deletingCardId === card.id}>
+                  删除
+                </Button>
+              </Popconfirm>
+            </Space>
           </div>
         ))}
       </div>

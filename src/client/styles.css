@@ -495,9 +495,23 @@ body {
 }
 
 .mini-row {
+  flex-wrap: wrap;
   justify-content: space-between;
   border-bottom: 1px solid #eef2f7;
   padding: 8px 0;
+}
+
+.mini-secret {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.secret-plain-text {
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .product-visual {

@@ -5,15 +5,18 @@ import {
   createUpstreamChannel,
   createOrder,
   createProduct,
+  deleteCard,
   deleteUpstreamChannel,
   dashboardStats,
   findOrdersByContact,
+  getCardSecret,
   getPublicProduct,
   getPublicProductAvailability,
   getPublicProductCaptcha,
   getPublicOrder,
   getStoreSettings,
   handlePeerPayCallback,
+  listCards,
   listUpstreamChannels,
   listPublicProducts,
   updateUpstreamChannel,
@@ -28,6 +31,35 @@ function createTestContext(): AppContext {
 }
 
 describe("store services", () => {
+  test("filters duplicate card imports and supports revealing and deleting cards", () => {
+    const ctx = createTestContext();
+    const product = createProduct(ctx, {
+      title: "卡密去重",
+      slug: "dedupe-card",
+      price: "9.90",
+      status: "active",
+      deliveryMode: "card"
+    });
+
+    expect(addCards(ctx, product!.id, { cards: ["CARD-000000001", "CARD-000000002", "CARD-000000001"] })).toMatchObject({
+      saved: 2,
+      skippedDuplicates: 1,
+      availableStock: 2
+    });
+    expect(addCards(ctx, product!.id, { cards: "CARD-000000002\nCARD-000000003" })).toMatchObject({
+      saved: 1,
+      skippedDuplicates: 1,
+      availableStock: 3
+    });
+
+    const cards = listCards(ctx, product!.id);
+    const card = cards.find((item) => item.secretPreview.endsWith("0003"));
+    expect(card).toBeTruthy();
+    expect(getCardSecret(ctx, product!.id, card!.id).secret).toBe("CARD-000000003");
+    expect(deleteCard(ctx, product!.id, card!.id)).toMatchObject({ ok: true, availableStock: 2 });
+    expect(listCards(ctx, product!.id).some((item) => item.id === card!.id)).toBe(false);
+  });
+
   test("creates PeerPay payment and delivers card inventory after callback", async () => {
     const ctx = createTestContext();
     const restorePeerPay = mockPeerPayFetch();

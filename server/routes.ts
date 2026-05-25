@@ -11,7 +11,9 @@ import {
   createOrder,
   createProduct,
   dashboardStats,
+  deleteCard,
   findPublicOrdersByContact,
+  getCardSecret,
   getPublicProduct,
   getPublicProductAvailability,
   getPublicProductCaptcha,
@@ -128,6 +130,14 @@ export function createApiRoutes(ctx: AppContext) {
       GET: (req: RouteRequest<{ id: string }>) => withErrors(() => admin(ctx, req, () => json(listCards(ctx, Number(req.params.id))))),
       POST: (req: RouteRequest<{ id: string }>) => withErrors(async () => admin(ctx, req, async () => {
         return json(addCards(ctx, Number(req.params.id), await readJson<AddCardsInput>(req)), { status: 201 });
+      }))
+    },
+    "/api/admin/products/:id/cards/:cardId": {
+      GET: (req: RouteRequest<{ id: string; cardId: string }>) => withErrors(() => admin(ctx, req, () => {
+        return json(getCardSecret(ctx, Number(req.params.id), Number(req.params.cardId)));
+      })),
+      DELETE: (req: RouteRequest<{ id: string; cardId: string }>) => withErrors(() => admin(ctx, req, () => {
+        return json(deleteCard(ctx, Number(req.params.id), Number(req.params.cardId)));
       }))
     },
     "/api/admin/orders": {
