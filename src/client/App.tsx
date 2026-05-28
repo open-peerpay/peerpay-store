@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import Markdown from "react-markdown";
 import {
   App as AntApp,
   Button,
@@ -1179,7 +1180,7 @@ function ProductDrawer({ product, channels, open, onClose, onSaved }: { product:
           </Form.Item>
         </div>
         <Form.Item name="description" label="商品描述">
-          <TextArea rows={4} />
+          <TextArea rows={4} placeholder="支持 Markdown 格式" />
         </Form.Item>
         <Form.Item name="coverUrl" label="封面图">
           <ImageUrlUploadField placeholder="上传封面图后自动填入，也可以粘贴图片 URL" uploadText="上传封面图" />
@@ -1764,7 +1765,9 @@ function ProductModal({
           <section className="store-dialog-copy">
             <Text className="store-eyebrow">商品详情</Text>
             <Title id="product-dialog-title" level={2}>{product.title}</Title>
-            <Paragraph className="product-description-text">{product.description || "该商品支持自助下单、付款后自动发货和历史订单查询。"}</Paragraph>
+            <div className="product-description-text">
+              <Markdown>{product.description || "该商品支持自助下单、付款后自动发货和历史订单查询。"}</Markdown>
+            </div>
             <div className="price-line">¥{product.price}</div>
             <div className="tag-row">
               <StatusTag value={product.available ? "active" : "archived"} text={product.available ? "有货" : "无库存"} />

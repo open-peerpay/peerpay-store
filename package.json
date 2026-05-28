@@ -17,7 +17,8 @@
     "@ant-design/icons": "latest",
     "antd": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "react-markdown": "^10.1.0"
   },
   "devDependencies": {
     "@ant-design/cli": "latest",
