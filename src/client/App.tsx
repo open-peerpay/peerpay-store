@@ -17,6 +17,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
   Upload
 } from "antd";
@@ -28,6 +29,8 @@ import {
   ArrowUpOutlined,
   BellOutlined,
   CheckCircleOutlined,
+  CompressOutlined,
+  CopyOutlined,
   DeleteOutlined,
   FileSearchOutlined,
   GlobalOutlined,
@@ -1894,6 +1897,45 @@ function StoreDialog({ open, onClose, labelledBy, children }: { open: boolean; o
   );
 }
 
+function DeliveryContent({ payload }: { payload: string }) {
+  const { message } = AntApp.useApp();
+  let parsed: unknown;
+  let isJson = false;
+  try { parsed = JSON.parse(payload); isJson = true; } catch { /* not json */ }
+  const formatted = isJson ? JSON.stringify(parsed, null, 2) : payload;
+  const compressed = isJson ? JSON.stringify(parsed) : payload;
+
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success("已复制");
+    } catch {
+      message.error("复制失败，请手动复制");
+    }
+  };
+
+  return (
+    <section className="delivery-box">
+      <Text type="secondary">发货内容</Text>
+      <div className="delivery-copy-actions">
+        <Tooltip title="复制">
+          <button onClick={() => copyText(formatted)}>
+            <CopyOutlined />
+          </button>
+        </Tooltip>
+        {isJson && (
+          <Tooltip title="压缩复制">
+            <button onClick={() => copyText(compressed)}>
+              <CompressOutlined />
+            </button>
+          </Tooltip>
+        )}
+      </div>
+      <pre>{formatted}</pre>
+    </section>
+  );
+}
+
 function OrderDetails({ order, publicView = false }: { order: Order; publicView?: boolean }) {
   const showPickup = canShowPickup(order);
   return (
@@ -1923,12 +1965,7 @@ function OrderDetails({ order, publicView = false }: { order: Order; publicView?
           <span>{order.remark}</span>
         </section>
       )}
-      {order.deliveryPayload && (
-        <section className="delivery-box">
-          <Text type="secondary">发货内容</Text>
-          <pre>{order.deliveryPayload}</pre>
-        </section>
-      )}
+      {order.deliveryPayload && <DeliveryContent payload={order.deliveryPayload} />}
       {order.manualReason && (
         <section className="manual-box">
           <BellOutlined />
