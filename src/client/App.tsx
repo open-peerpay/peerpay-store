@@ -29,6 +29,7 @@ import {
   ArrowUpOutlined,
   BellOutlined,
   CheckCircleOutlined,
+  CopyOutlined,
   DeleteOutlined,
   EyeOutlined,
   ExportOutlined,
@@ -1902,11 +1903,24 @@ function OrderPage({
   settings: StoreSettings;
   onHome: () => void;
 }) {
+  const { message } = AntApp.useApp();
   const showPickup = order ? canShowPickup(order) : false;
   const hasPickupConfig = Boolean(order?.pickupUrl && order.pickupOpenMode !== "none");
   const showPickupFrame = Boolean(order?.pickupUrl && showPickup && order.pickupOpenMode === "iframe");
   const showPickupExternal = Boolean(order?.pickupUrl && showPickup && order.pickupOpenMode === "new_tab");
   const state = orderPageState(order, loading, error);
+  const copyOrderId = useCallback(async (id: string) => {
+    if (!navigator.clipboard?.writeText) {
+      message.error("当前浏览器不支持自动复制");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(id);
+      message.success("订单号已复制");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "复制失败");
+    }
+  }, [message]);
 
   return (
     <div className="order-page">
@@ -1945,8 +1959,16 @@ function OrderPage({
                 <Text className="store-eyebrow">{settings.storeName || "PeerPay Store"}</Text>
                 <h1>{order.productTitle}</h1>
                 <div className="order-id-line">
-                  <span>订单号</span>
-                  <Text copyable>{order.id}</Text>
+                  <span className="order-id-label">订单号</span>
+                  <button
+                    type="button"
+                    className="order-id-copy-button"
+                    onClick={() => void copyOrderId(order.id)}
+                    aria-label={`复制订单号 ${order.id}`}
+                  >
+                    <span className="order-id-value">{order.id}</span>
+                    <CopyOutlined />
+                  </button>
                 </div>
               </div>
               <StatusTag value={order.status} text={ORDER_STATUS_LABELS[order.status]} />
