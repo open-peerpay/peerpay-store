@@ -558,12 +558,45 @@ body {
   padding: 14px;
 }
 
-.delivery-box pre {
+.delivery-box,
+.delivery-content-embedded {
+  position: relative;
+}
+
+.delivery-box pre,
+.delivery-content-embedded pre {
   margin: 8px 0 0;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 16px;
   line-height: 1.6;
+}
+
+.delivery-copy-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 6px;
+}
+
+.delivery-copy-actions button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(30, 34, 29, 0.22);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #181a17;
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.delivery-copy-actions button:hover,
+.delivery-copy-actions button:focus-visible {
+  border-color: #06613f;
+  color: #06613f;
+  outline: none;
 }
 
 .manual-box,
@@ -815,6 +848,11 @@ body {
   word-break: break-word;
   font-size: 16px;
   line-height: 1.7;
+}
+
+.order-delivery-section .delivery-copy-actions {
+  top: 12px;
+  right: 16px;
 }
 
 .order-empty-copy {

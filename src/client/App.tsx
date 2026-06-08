@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import Markdown from "react-markdown";
 import {
   App as AntApp,
   Button,
@@ -17,6 +18,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
   Upload
 } from "antd";
@@ -29,6 +31,7 @@ import {
   ArrowUpOutlined,
   BellOutlined,
   CheckCircleOutlined,
+  CompressOutlined,
   CopyOutlined,
   DeleteOutlined,
   EyeOutlined,
@@ -1994,7 +1997,7 @@ function OrderPage({
                 </div>
               </div>
               {order.deliveryPayload ? (
-                <pre>{order.deliveryPayload}</pre>
+                <DeliveryContent payload={order.deliveryPayload} embedded />
               ) : (
                 <div className="order-empty-copy">
                   <strong>{state.title}</strong>
@@ -2180,7 +2183,9 @@ function ProductDetailPage({
                 )}
               </div>
             </div>
-            <MarkdownContent value={product.description || DEFAULT_PRODUCT_DETAIL} />
+            <div className="markdown-content">
+              <Markdown>{product.description || DEFAULT_PRODUCT_DETAIL}</Markdown>
+            </div>
           </article>
 
           <aside className="store-panel product-checkout-panel">
@@ -2312,241 +2317,7 @@ function ProductOrderForm({
   );
 }
 
-type MarkdownBlock =
-  | { type: "heading"; level: 1 | 2 | 3 | 4; text: string }
-  | { type: "paragraph"; text: string }
-  | { type: "quote"; text: string }
-  | { type: "ul"; items: string[] }
-  | { type: "ol"; items: string[] }
-  | { type: "code"; text: string; language: string | null }
-  | { type: "hr" };
-
 type ShareProductResult = "shared" | "copied" | "cancelled";
-
-function MarkdownContent({ value }: { value: string }) {
-  const blocks = parseMarkdownBlocks(value);
-  if (!blocks.length) {
-    return null;
-  }
-  return (
-    <div className="markdown-content">
-      {blocks.map((block, index) => renderMarkdownBlock(block, `md-${index}`))}
-    </div>
-  );
-}
-
-function renderMarkdownBlock(block: MarkdownBlock, key: string) {
-  if (block.type === "heading") {
-    const content = renderInlineWithBreaks(block.text, key);
-    if (block.level === 1) {
-      return <h1 key={key}>{content}</h1>;
-    }
-    if (block.level === 2) {
-      return <h2 key={key}>{content}</h2>;
-    }
-    if (block.level === 3) {
-      return <h3 key={key}>{content}</h3>;
-    }
-    return <h4 key={key}>{content}</h4>;
-  }
-  if (block.type === "quote") {
-    return <blockquote key={key}>{renderInlineWithBreaks(block.text, key)}</blockquote>;
-  }
-  if (block.type === "ul") {
-    return (
-      <ul key={key}>
-        {block.items.map((item, index) => <li key={`${key}-${index}`}>{renderInlineWithBreaks(item, `${key}-${index}`)}</li>)}
-      </ul>
-    );
-  }
-  if (block.type === "ol") {
-    return (
-      <ol key={key}>
-        {block.items.map((item, index) => <li key={`${key}-${index}`}>{renderInlineWithBreaks(item, `${key}-${index}`)}</li>)}
-      </ol>
-    );
-  }
-  if (block.type === "code") {
-    return (
-      <pre key={key} data-language={block.language ?? undefined}>
-        <code>{block.text}</code>
-      </pre>
-    );
-  }
-  if (block.type === "hr") {
-    return <hr key={key} />;
-  }
-  return <p key={key}>{renderInlineWithBreaks(block.text, key)}</p>;
-}
-
-function parseMarkdownBlocks(value: string): MarkdownBlock[] {
-  const text = value.replace(/\r\n?/g, "\n").trim();
-  if (!text) {
-    return [];
-  }
-  const blocks: MarkdownBlock[] = [];
-  const lines = text.split("\n");
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-    const trimmed = line.trim();
-    if (!trimmed) {
-      index += 1;
-      continue;
-    }
-
-    const fenceMatch = trimmed.match(/^```(\S*)/);
-    if (fenceMatch) {
-      const codeLines: string[] = [];
-      index += 1;
-      while (index < lines.length && !lines[index].trim().startsWith("```")) {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-      if (index < lines.length) {
-        index += 1;
-      }
-      blocks.push({ type: "code", text: codeLines.join("\n"), language: fenceMatch[1] || null });
-      continue;
-    }
-
-    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
-      blocks.push({ type: "hr" });
-      index += 1;
-      continue;
-    }
-
-    const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
-    if (headingMatch) {
-      blocks.push({ type: "heading", level: headingMatch[1].length as 1 | 2 | 3 | 4, text: headingMatch[2].trim() });
-      index += 1;
-      continue;
-    }
-
-    if (/^>\s?/.test(trimmed)) {
-      const quoteLines: string[] = [];
-      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
-        quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
-        index += 1;
-      }
-      blocks.push({ type: "quote", text: quoteLines.join("\n") });
-      continue;
-    }
-
-    if (/^\s*[-*+]\s+/.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length && /^\s*[-*+]\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\s*[-*+]\s+/, "").trim());
-        index += 1;
-      }
-      blocks.push({ type: "ul", items });
-      continue;
-    }
-
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length && /^\s*\d+\.\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\s*\d+\.\s+/, "").trim());
-        index += 1;
-      }
-      blocks.push({ type: "ol", items });
-      continue;
-    }
-
-    const paragraphLines: string[] = [];
-    while (
-      index < lines.length
-      && lines[index].trim()
-      && !isMarkdownBlockStart(lines[index])
-    ) {
-      paragraphLines.push(lines[index].trim());
-      index += 1;
-    }
-    blocks.push({ type: "paragraph", text: paragraphLines.join("\n") });
-  }
-
-  return blocks;
-}
-
-function isMarkdownBlockStart(line: string) {
-  const trimmed = line.trim();
-  return (
-    /^```/.test(trimmed)
-    || /^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)
-    || /^(#{1,4})\s+/.test(trimmed)
-    || /^>\s?/.test(trimmed)
-    || /^\s*[-*+]\s+/.test(line)
-    || /^\s*\d+\.\s+/.test(line)
-  );
-}
-
-function renderInlineWithBreaks(text: string, keyPrefix: string) {
-  const lines = text.split("\n");
-  const nodes: ReactNode[] = [];
-  lines.forEach((line, index) => {
-    if (index > 0) {
-      nodes.push(<br key={`${keyPrefix}-br-${index}`} />);
-    }
-    nodes.push(...renderInlineMarkdown(line, `${keyPrefix}-${index}`));
-  });
-  return nodes;
-}
-
-function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]+`|\[([^\]\n]+)\]\(([^)\n]+)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*|_([^_\n]+)_)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(text))) {
-    if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
-    }
-    const token = match[0];
-    const key = `${keyPrefix}-${match.index}`;
-    if (token.startsWith("`")) {
-      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
-    } else if (match[2] !== undefined && match[3] !== undefined) {
-      const href = safeMarkdownHref(match[3]);
-      nodes.push(href ? (
-        <a key={key} href={href} target={isExternalHref(href) ? "_blank" : undefined} rel={isExternalHref(href) ? "noreferrer" : undefined}>
-          {renderInlineMarkdown(match[2], key)}
-        </a>
-      ) : match[2]);
-    } else if (match[4] !== undefined || match[5] !== undefined) {
-      nodes.push(<strong key={key}>{renderInlineMarkdown(match[4] ?? match[5] ?? "", key)}</strong>);
-    } else {
-      nodes.push(<em key={key}>{renderInlineMarkdown(match[6] ?? match[7] ?? "", key)}</em>);
-    }
-    lastIndex = pattern.lastIndex;
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-  return nodes;
-}
-
-function safeMarkdownHref(value: string) {
-  const href = value.trim().replace(/^<(.+)>$/, "$1");
-  if (!href) {
-    return null;
-  }
-  if (href.startsWith("#") || href.startsWith("/") || href.startsWith("./") || href.startsWith("../")) {
-    return href;
-  }
-  try {
-    const url = new URL(href, window.location.origin);
-    return ["http:", "https:", "mailto:", "tel:"].includes(url.protocol) ? url.toString() : null;
-  } catch {
-    return null;
-  }
-}
-
-function isExternalHref(href: string) {
-  return /^https?:\/\//i.test(href);
-}
 
 function plainTextFromMarkdown(value: string) {
   return value
@@ -2624,6 +2395,64 @@ async function shareProductLink(product: PublicProduct, url: string): Promise<Sh
   return "copied";
 }
 
+function DeliveryContent({ payload, embedded = false }: { payload: string; embedded?: boolean }) {
+  const { message } = AntApp.useApp();
+  let parsed: unknown;
+  let isJson = false;
+  try {
+    parsed = JSON.parse(payload);
+    isJson = true;
+  } catch {
+    // Plain text delivery content stays as-is.
+  }
+  const formatted = isJson ? JSON.stringify(parsed, null, 2) : payload;
+  const compressed = isJson ? JSON.stringify(parsed) : payload;
+
+  const copyText = async (text: string) => {
+    if (!navigator.clipboard?.writeText) {
+      message.error("当前浏览器不支持自动复制");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success("已复制");
+    } catch {
+      message.error("复制失败，请手动复制");
+    }
+  };
+
+  const content = (
+    <>
+      <div className="delivery-copy-actions">
+        <Tooltip title="复制">
+          <button type="button" onClick={() => void copyText(formatted)} aria-label="复制发货内容">
+            <CopyOutlined />
+          </button>
+        </Tooltip>
+        {isJson && (
+          <Tooltip title="压缩复制">
+            <button type="button" onClick={() => void copyText(compressed)} aria-label="压缩复制发货内容">
+              <CompressOutlined />
+            </button>
+          </Tooltip>
+        )}
+      </div>
+      <pre>{formatted}</pre>
+    </>
+  );
+
+  if (embedded) {
+    return <div className="delivery-content-embedded">{content}</div>;
+  }
+
+  return (
+    <section className="delivery-box">
+      <Text type="secondary">发货内容</Text>
+      {content}
+    </section>
+  );
+}
+
 function OrderDetails({ order }: { order: Order }) {
   const showPickup = canShowPickup(order);
   return (
@@ -2653,12 +2482,7 @@ function OrderDetails({ order }: { order: Order }) {
           <span>{order.remark}</span>
         </section>
       )}
-      {order.deliveryPayload && (
-        <section className="delivery-box">
-          <Text type="secondary">发货内容</Text>
-          <pre>{order.deliveryPayload}</pre>
-        </section>
-      )}
+      {order.deliveryPayload && <DeliveryContent payload={order.deliveryPayload} />}
       {order.manualReason && (
         <section className="manual-box">
           <BellOutlined />
