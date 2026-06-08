@@ -133,6 +133,8 @@ function migrate(db: Database) {
   ensureColumn(db, "orders", "upstream_captcha", "ALTER TABLE orders ADD COLUMN upstream_captcha TEXT");
   ensureColumn(db, "orders", "upstream_captcha_token", "ALTER TABLE orders ADD COLUMN upstream_captcha_token TEXT");
   ensureColumn(db, "products", "upstream_channel_id", "ALTER TABLE products ADD COLUMN upstream_channel_id INTEGER");
+  ensureColumn(db, "products", "embedded_sites", "ALTER TABLE products ADD COLUMN embedded_sites TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "orders", "embedded_sites", "ALTER TABLE orders ADD COLUMN embedded_sites TEXT NOT NULL DEFAULT '[]'");
 }
 
 function rebuildOrdersTableIfNeeded(db: Database) {

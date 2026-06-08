@@ -1,6 +1,11 @@
 export type ProductStatus = "draft" | "active" | "archived";
 export type DeliveryMode = "card" | "upstream" | "manual";
 export type PickupOpenMode = "none" | "iframe" | "new_tab";
+
+export interface EmbeddedSite {
+  title: string;
+  url: string;
+}
 export type ContactType = "contact" | "phone" | "qq" | "email";
 export type PaymentChannel = "alipay" | "wechat";
 export type OrderStatus = "pending_payment" | "paid" | "delivered" | "needs_manual" | "failed" | "cancelled";
@@ -79,6 +84,7 @@ export interface Product {
   upstreamChannelId: number | null;
   pickupUrl: string | null;
   pickupOpenMode: PickupOpenMode;
+  embeddedSites: EmbeddedSite[];
   lookupMethods: ContactType[];
   upstreamConfig: UpstreamConfig | null;
   availableStock: number | null;
@@ -129,6 +135,7 @@ export interface Order {
   deliveryPayload: string | null;
   pickupUrl: string | null;
   pickupOpenMode: PickupOpenMode;
+  embeddedSites: EmbeddedSite[];
   upstreamOrderId: string | null;
   upstreamResponse: unknown;
   upstreamCaptcha: string | null;
@@ -207,6 +214,7 @@ export interface CreateProductInput {
   upstreamChannelId?: number | null;
   pickupUrl?: string | null;
   pickupOpenMode?: PickupOpenMode;
+  embeddedSites?: EmbeddedSite[];
   lookupMethods?: ContactType[];
   upstreamConfig?: UpstreamConfig | null;
 }

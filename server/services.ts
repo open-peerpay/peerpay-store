@@ -18,6 +18,7 @@ import type {
   OrderStatus,
   Page,
   PaymentChannel,
+  EmbeddedSite,
   PickupOpenMode,
   Product,
   ProductCard,
@@ -60,6 +61,7 @@ interface ProductRow {
   upstream_channel_id: number | null;
   pickup_url: string | null;
   pickup_open_mode: PickupOpenMode;
+  embedded_sites: string;
   lookup_methods: string;
   upstream_config: string | null;
   created_at: string;
@@ -85,6 +87,7 @@ interface OrderRow {
   delivery_payload: string | null;
   pickup_url: string | null;
   pickup_open_mode: PickupOpenMode;
+  embedded_sites: string;
   upstream_order_id: string | null;
   upstream_response: string | null;
   upstream_captcha: string | null;
@@ -419,6 +422,9 @@ function publicProductFromAvailability(product: Product, availability: Availabil
     ...product,
     deliveryMode: product.deliveryMode === "upstream" ? "manual" : product.deliveryMode,
     upstreamChannelId: null,
+    pickupUrl: null,
+    pickupOpenMode: "none",
+    embeddedSites: [],
     upstreamConfig: null,
     available: availability.available,
     availabilityReason: availability.available ? null : "无库存",
@@ -442,16 +448,16 @@ export async function getPublicProductCaptcha(ctx: AppContext, slug: string): Pr
 }
 
 export function createProduct(ctx: AppContext, input: CreateProductInput) {
-  const normalized = normalizeProductInput(input);
+  const normalized = normalizeProductInput(input, { embeddedSitesAuthoritative: hasOwn(input, "embeddedSites") });
   const upstreamConfig = productUpstreamConfigForStorage(normalized.upstreamConfig, normalized.upstreamChannelId);
   const at = nowIso();
   const result = ctx.db.query(`
     INSERT INTO products (
       slug, title, description, price_cents, status, cover_url, sort_order,
-      delivery_mode, upstream_channel_id, pickup_url, pickup_open_mode, lookup_methods, upstream_config,
+      delivery_mode, upstream_channel_id, pickup_url, pickup_open_mode, embedded_sites, lookup_methods, upstream_config,
       created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     normalized.slug,
     normalized.title,
@@ -464,6 +470,7 @@ export function createProduct(ctx: AppContext, input: CreateProductInput) {
     normalized.upstreamChannelId,
     normalized.pickupUrl,
     normalized.pickupOpenMode,
+    JSON.stringify(normalized.embeddedSites),
     JSON.stringify(normalized.lookupMethods),
     upstreamConfig ? JSON.stringify(upstreamConfig) : null,
     at,
@@ -474,25 +481,28 @@ export function createProduct(ctx: AppContext, input: CreateProductInput) {
 }
 
 export function updateProduct(ctx: AppContext, id: number, input: UpdateProductInput) {
-  const current = getProductById(ctx, id);
-  if (!current) {
+  const currentRow = ctx.db.query("SELECT * FROM products WHERE id = ?").get(id) as ProductRow | null;
+  if (!currentRow) {
     throw apiError(404, "商品不存在");
   }
+  const current = productFromRow(ctx, currentRow);
+  const embeddedSitesAuthoritative = hasOwn(input, "embeddedSites");
   const merged = normalizeProductInput({
     ...current,
     ...input,
     price: input.price ?? current.price,
     lookupMethods: input.lookupMethods ?? current.lookupMethods,
     upstreamChannelId: input.upstreamChannelId === undefined ? current.upstreamChannelId : input.upstreamChannelId,
-    upstreamConfig: input.upstreamConfig === undefined ? current.upstreamConfig : input.upstreamConfig
-  });
+    upstreamConfig: input.upstreamConfig === undefined ? current.upstreamConfig : input.upstreamConfig,
+    embeddedSites: embeddedSitesAuthoritative ? input.embeddedSites : readStoredEmbeddedSites(currentRow.embedded_sites)
+  }, { embeddedSitesAuthoritative });
   const upstreamConfig = productUpstreamConfigForStorage(merged.upstreamConfig, merged.upstreamChannelId);
   const at = nowIso();
   ctx.db.query(`
     UPDATE products
     SET slug = ?, title = ?, description = ?, price_cents = ?, status = ?, cover_url = ?,
         sort_order = ?, delivery_mode = ?, upstream_channel_id = ?, pickup_url = ?, pickup_open_mode = ?,
-        lookup_methods = ?, upstream_config = ?, updated_at = ?
+        embedded_sites = ?, lookup_methods = ?, upstream_config = ?, updated_at = ?
     WHERE id = ?
   `).run(
     merged.slug,
@@ -506,6 +516,7 @@ export function updateProduct(ctx: AppContext, id: number, input: UpdateProductI
     merged.upstreamChannelId,
     merged.pickupUrl,
     merged.pickupOpenMode,
+    JSON.stringify(merged.embeddedSites),
     JSON.stringify(merged.lookupMethods),
     upstreamConfig ? JSON.stringify(upstreamConfig) : null,
     at,
@@ -677,6 +688,7 @@ export function publicOrderFromOrder(order: Order): Order {
     deliveryMode: order.deliveryMode === "upstream" ? "manual" : order.deliveryMode,
     pickupUrl: showPickup ? order.pickupUrl : null,
     pickupOpenMode: showPickup ? order.pickupOpenMode : "none",
+    embeddedSites: showPickup ? order.embeddedSites : [],
     upstreamOrderId: null,
     upstreamResponse: null,
     upstreamCaptcha: null,
@@ -964,9 +976,10 @@ function insertOrder(
     INSERT INTO orders (
       id, product_id, product_slug, product_title, amount_cents, contact_type,
       contact_value, remark, status, peerpay_payment_channel, delivery_mode, pickup_url, pickup_open_mode,
+      embedded_sites,
       upstream_captcha, upstream_captcha_token, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_payment', ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_payment', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     product.id,
@@ -980,6 +993,7 @@ function insertOrder(
     product.deliveryMode,
     product.pickupUrl,
     product.pickupOpenMode,
+    JSON.stringify(product.embeddedSites),
     upstreamCaptcha,
     upstreamCaptchaToken,
     at,
@@ -1660,6 +1674,7 @@ function productFromRow(ctx: AppContext, row: ProductRow): Product {
     upstreamChannelId: row.upstream_channel_id,
     pickupUrl: row.pickup_url,
     pickupOpenMode: row.pickup_open_mode,
+    embeddedSites: readEmbeddedSites(row.embedded_sites, row.pickup_open_mode, row.pickup_url),
     lookupMethods: parseJson<ContactType[]>(row.lookup_methods, DEFAULT_LOOKUP_METHODS),
     upstreamConfig: resolveProductUpstreamConfig(ctx, deliveryMode, row.upstream_channel_id, storedUpstreamConfig),
     availableStock: deliveryMode === "card" ? countCards(ctx, row.id) : null,
@@ -1735,6 +1750,7 @@ function orderFromRow(row: OrderRow): Order {
     deliveryPayload: row.delivery_payload,
     pickupUrl: row.pickup_url,
     pickupOpenMode: row.pickup_open_mode,
+    embeddedSites: readEmbeddedSites(row.embedded_sites, row.pickup_open_mode, row.pickup_url),
     upstreamOrderId: row.upstream_order_id,
     upstreamResponse: parseJson<unknown>(row.upstream_response, null),
     upstreamCaptcha: row.upstream_captcha,
@@ -1758,7 +1774,7 @@ function logFromRow(row: SystemLogRow): SystemLog {
   };
 }
 
-function normalizeProductInput(input: CreateProductInput | (Product & UpdateProductInput)) {
+function normalizeProductInput(input: CreateProductInput | (Product & UpdateProductInput), options: { embeddedSitesAuthoritative?: boolean } = {}) {
   const title = input.title?.trim();
   if (!title) {
     throw apiError(400, "商品名称不能为空");
@@ -1771,6 +1787,9 @@ function normalizeProductInput(input: CreateProductInput | (Product & UpdateProd
   const deliveryMode = input.deliveryMode ?? "card";
   const pickupOpenMode = input.pickupOpenMode ?? (input.pickupUrl ? "iframe" : "none");
   const lookupMethods = normalizeLookupMethods(input.lookupMethods ?? DEFAULT_LOOKUP_METHODS);
+  const embeddedSites = normalizeEmbeddedSites(input.embeddedSites);
+  const legacyPickupUrl = blankToNull(input.pickupUrl);
+  const clearLegacyPickup = options.embeddedSitesAuthoritative && !(pickupOpenMode === "new_tab" && legacyPickupUrl);
   return {
     slug: normalizeSlug(input.slug || title),
     title,
@@ -1781,11 +1800,21 @@ function normalizeProductInput(input: CreateProductInput | (Product & UpdateProd
     sortOrder: Number(input.sortOrder ?? 100),
     deliveryMode,
     upstreamChannelId: deliveryMode === "upstream" ? normalizeOptionalInteger(input.upstreamChannelId) : null,
-    pickupUrl: blankToNull(input.pickupUrl),
-    pickupOpenMode,
+    pickupUrl: embeddedSites.length > 0 ? embeddedSites[0].url : (clearLegacyPickup ? null : legacyPickupUrl),
+    pickupOpenMode: embeddedSites.length > 0 ? "iframe" : (clearLegacyPickup ? "none" : pickupOpenMode),
+    embeddedSites,
     lookupMethods,
     upstreamConfig: normalizeUpstreamConfig(input.upstreamConfig)
   };
+}
+
+function normalizeEmbeddedSites(value: EmbeddedSite[] | undefined | null): EmbeddedSite[] {
+  if (!value || !Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((site) => site.title?.trim() && site.url?.trim())
+    .map((site) => ({ title: site.title.trim(), url: site.url.trim() }));
 }
 
 function normalizeUpstreamChannelInput(input: UpstreamChannelInput) {
@@ -1948,6 +1977,35 @@ function blankToNull(value: string | null | undefined) {
 function normalizeHexColor(value: string | null | undefined) {
   const text = value?.trim();
   return text && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(text) ? text : null;
+}
+
+function readEmbeddedSites(embeddedSitesJson: string | null | undefined, pickupOpenMode: string | null, pickupUrl: string | null): EmbeddedSite[] {
+  const stored = readStoredEmbeddedSites(embeddedSitesJson);
+  if (stored.length > 0) {
+    return stored;
+  }
+  if (pickupOpenMode === "iframe" && pickupUrl) {
+    return [{ title: "提货网站", url: pickupUrl }];
+  }
+  return [];
+}
+
+function readStoredEmbeddedSites(embeddedSitesJson: string | null | undefined): EmbeddedSite[] {
+  if (embeddedSitesJson) {
+    try {
+      const parsed = JSON.parse(embeddedSitesJson);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return normalizeEmbeddedSites(parsed as EmbeddedSite[]);
+      }
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function hasOwn(value: object, key: string) {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function parseJson<T>(text: string | null, fallback: T): T {

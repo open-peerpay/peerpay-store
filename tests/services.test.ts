@@ -19,6 +19,7 @@ import {
   listCards,
   listUpstreamChannels,
   listPublicProducts,
+  updateProduct,
   updateUpstreamChannel,
   updateOrderStatus,
   updateStoreSettings,
@@ -295,6 +296,132 @@ describe("store services", () => {
     } finally {
       restorePeerPay();
     }
+  });
+
+  test("snapshots embedded sites on orders and hides them until paid", async () => {
+    const ctx = createTestContext();
+    const restorePeerPay = mockPeerPayFetch();
+    const product = createProduct(ctx, {
+      title: "多工具网站商品",
+      slug: "embedded-sites",
+      price: "12.00",
+      status: "active",
+      deliveryMode: "manual",
+      embeddedSites: [
+        { title: "工具网站 A", url: "https://tools.test/a" },
+        { title: "工具网站 B", url: "https://tools.test/b" }
+      ]
+    });
+
+    try {
+      ctx.db.query("INSERT INTO app_settings(key, value, updated_at) VALUES ('peerpay_base_url', ?, ?)").run("http://peerpay.test", new Date().toISOString());
+      const publicProduct = await getPublicProduct(ctx, "embedded-sites");
+      expect(publicProduct?.pickupUrl).toBeNull();
+      expect(publicProduct?.pickupOpenMode).toBe("none");
+      expect(publicProduct?.embeddedSites).toEqual([]);
+
+      const result = await createOrder(ctx, {
+        slug: "embedded-sites",
+        contactValue: "buyer@example.com",
+        paymentChannel: "alipay"
+      }, "http://store.test/api/public/orders");
+
+      expect(result.order.embeddedSites).toEqual([
+        { title: "工具网站 A", url: "https://tools.test/a" },
+        { title: "工具网站 B", url: "https://tools.test/b" }
+      ]);
+      expect(result.order.pickupUrl).toBe("https://tools.test/a");
+      expect(result.order.pickupOpenMode).toBe("iframe");
+
+      const publicPending = getPublicOrder(ctx, result.order.id);
+      expect(publicPending?.embeddedSites).toEqual([]);
+
+      updateProduct(ctx, product!.id, { embeddedSites: [] });
+      const clearedProduct = updateProduct(ctx, product!.id, { title: "清空工具网站商品" });
+      expect(clearedProduct?.embeddedSites).toEqual([]);
+      expect(clearedProduct?.pickupUrl).toBeNull();
+      expect(clearedProduct?.pickupOpenMode).toBe("none");
+
+      const secret = ctx.db.query("SELECT peerpay_callback_secret AS secret FROM orders WHERE id = ?").get(result.order.id) as { secret: string };
+      const payload = {
+        orderId: result.order.peerpayOrderId!,
+        merchantOrderId: result.order.id,
+        paymentAccountCode: "alipay-a",
+        paymentChannel: "alipay" as const,
+        status: "paid",
+        requestedAmount: "12.00",
+        actualAmount: "12.00",
+        paidAt: "2026-05-04T00:00:00.000Z"
+      };
+      const sign = signPeerPayPayload(payload, secret.secret);
+      await handlePeerPayCallback(ctx, payload, sign);
+
+      const publicPaid = getPublicOrder(ctx, result.order.id);
+      expect(publicPaid?.embeddedSites).toEqual([
+        { title: "工具网站 A", url: "https://tools.test/a" },
+        { title: "工具网站 B", url: "https://tools.test/b" }
+      ]);
+    } finally {
+      restorePeerPay();
+    }
+  });
+
+  test("preserves legacy new tab pickup when editing product fields", () => {
+    const ctx = createTestContext();
+    const product = createProduct(ctx, {
+      title: "旧新标签提货商品",
+      slug: "legacy-new-tab",
+      price: "12.00",
+      status: "active",
+      deliveryMode: "manual",
+      pickupUrl: "https://pickup.test/new-tab",
+      pickupOpenMode: "new_tab"
+    });
+
+    const updated = updateProduct(ctx, product!.id, {
+      title: "旧新标签提货商品新版",
+      pickupUrl: "https://pickup.test/new-tab",
+      pickupOpenMode: "new_tab",
+      embeddedSites: []
+    });
+
+    expect(updated?.embeddedSites).toEqual([]);
+    expect(updated?.pickupUrl).toBe("https://pickup.test/new-tab");
+    expect(updated?.pickupOpenMode).toBe("new_tab");
+  });
+
+  test("preserves legacy iframe pickup storage when editing product fields", () => {
+    const ctx = createTestContext();
+    const product = createProduct(ctx, {
+      title: "旧内嵌提货商品",
+      slug: "legacy-iframe",
+      price: "12.00",
+      status: "active",
+      deliveryMode: "manual",
+      pickupUrl: "https://pickup.test/old-iframe",
+      pickupOpenMode: "iframe"
+    });
+
+    const renamed = updateProduct(ctx, product!.id, {
+      title: "旧内嵌提货商品新版"
+    });
+    expect(renamed?.pickupUrl).toBe("https://pickup.test/old-iframe");
+
+    let row = ctx.db.query("SELECT pickup_url AS pickupUrl, embedded_sites AS embeddedSites FROM products WHERE id = ?")
+      .get(product!.id) as { pickupUrl: string; embeddedSites: string };
+    expect(row.pickupUrl).toBe("https://pickup.test/old-iframe");
+    expect(JSON.parse(row.embeddedSites)).toEqual([]);
+
+    const updated = updateProduct(ctx, product!.id, {
+      pickupUrl: "https://pickup.test/new-iframe",
+      pickupOpenMode: "iframe"
+    });
+    expect(updated?.pickupUrl).toBe("https://pickup.test/new-iframe");
+
+    row = ctx.db.query("SELECT pickup_url AS pickupUrl, embedded_sites AS embeddedSites FROM products WHERE id = ?")
+      .get(product!.id) as { pickupUrl: string; embeddedSites: string };
+    expect(row.pickupUrl).toBe("https://pickup.test/new-iframe");
+    expect(JSON.parse(row.embeddedSites)).toEqual([]);
   });
 
   test("treats failed upstream precheck as out of stock", async () => {

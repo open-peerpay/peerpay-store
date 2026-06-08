@@ -65,6 +65,7 @@ import {
 import type {
   AdminSessionState,
   DeliveryMode,
+  EmbeddedSite,
   HttpBodyType,
   HttpExpectation,
   Order,
@@ -1127,21 +1128,30 @@ function ProductDrawer({ product, channels, open, onClose, onSaved }: { product:
     if (!open) {
       return;
     }
+    form.resetFields();
     if (!product || product === "new") {
       form.setFieldsValue({
         status: "draft",
         deliveryMode: "card",
+        pickupUrl: null,
         pickupOpenMode: "none",
         sortOrder: 100,
         upstreamChannelId: undefined,
+        embeddedSites: [],
         upstreamConfig: upstreamConfigToForm(DEFAULT_UPSTREAM_CONFIG_EXAMPLE)
       });
       return;
     }
+    const sites = product.embeddedSites?.length
+      ? product.embeddedSites
+      : (product.pickupUrl && product.pickupOpenMode === "iframe"
+        ? [{ title: "提货网站", url: product.pickupUrl }]
+        : []);
     form.setFieldsValue({
       ...product,
       price: Number(product.price),
       upstreamChannelId: product.upstreamChannelId ?? undefined,
+      embeddedSites: sites,
       upstreamConfig: upstreamConfigToForm(product.upstreamConfig ?? DEFAULT_UPSTREAM_CONFIG_EXAMPLE)
     });
   }, [form, open, product]);
@@ -1161,8 +1171,11 @@ function ProductDrawer({ product, channels, open, onClose, onSaved }: { product:
         onFinish={async (values) => {
           try {
             const payload = normalizeProductForm(values);
+            const productPayload = product && product !== "new" && isUnchangedLegacyPickupSites(product, payload.embeddedSites)
+              ? { ...payload, embeddedSites: undefined }
+              : payload;
             if (product && product !== "new") {
-              await updateProduct(product.id, payload);
+              await updateProduct(product.id, productPayload);
             } else {
               await createProduct(payload);
             }
@@ -1200,13 +1213,35 @@ function ProductDrawer({ product, channels, open, onClose, onSaved }: { product:
           <ImageUrlUploadField placeholder="上传封面图后自动填入，也可以粘贴图片 URL" uploadText="上传封面图" />
         </Form.Item>
         <div className="form-grid">
-          <Form.Item name="pickupUrl" label="提货网站 URL">
+          <Form.Item name="pickupUrl" label="提货网站 URL" style={{ display: "none" }}>
             <Input />
           </Form.Item>
-          <Form.Item name="pickupOpenMode" label="提货打开方式">
+          <Form.Item name="pickupOpenMode" label="提货打开方式" style={{ display: "none" }}>
             <Select options={statusOptions(PICKUP_OPEN_MODE_LABELS)} />
           </Form.Item>
         </div>
+        <Text strong style={{ display: "block", marginBottom: 8 }}>工具网站</Text>
+        <Text type="secondary" style={{ display: "block", marginBottom: 16 }}>添加多个以内嵌 iframe 方式打开的提货或工具网站。</Text>
+        <Form.List name="embeddedSites">
+          {(fields, { add, remove }) => (
+            <>
+              {fields.map(({ key, name, ...rest }) => (
+                <div key={key} style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "flex-start" }}>
+                  <Form.Item {...rest} name={[name, "title"]} rules={[{ required: true, message: "请输入标题" }]} style={{ flex: 1, marginBottom: 0 }}>
+                    <Input placeholder="标题（例如：提货网站）" />
+                  </Form.Item>
+                  <Form.Item {...rest} name={[name, "url"]} rules={[{ required: true, message: "请输入 URL" }]} style={{ flex: 2, marginBottom: 0 }}>
+                    <Input placeholder="https://..." />
+                  </Form.Item>
+                  <Button icon={<DeleteOutlined />} onClick={() => remove(name)} danger style={{ flexShrink: 0, marginTop: 2 }} />
+                </div>
+              ))}
+              <Button type="dashed" onClick={() => add({ title: "", url: "" })} icon={<PlusOutlined />} block style={{ marginBottom: 16 }}>
+                添加工具网站
+              </Button>
+            </>
+          )}
+        </Form.List>
         <Form.Item noStyle shouldUpdate={(prev, current) => prev.deliveryMode !== current.deliveryMode}>
           {({ getFieldValue }) => getFieldValue("deliveryMode") === "upstream" ? (
             <>
@@ -1911,6 +1946,8 @@ function OrderPage({
   const hasPickupConfig = Boolean(order?.pickupUrl && order.pickupOpenMode !== "none");
   const showPickupFrame = Boolean(order?.pickupUrl && showPickup && order.pickupOpenMode === "iframe");
   const showPickupExternal = Boolean(order?.pickupUrl && showPickup && order.pickupOpenMode === "new_tab");
+  const embeddedSites = (order?.embeddedSites ?? []).filter((s) => s.title && s.url);
+  const showEmbeddedSites = showPickup && embeddedSites.length > 0;
   const state = orderPageState(order, loading, error);
   const copyOrderId = useCallback(async (id: string) => {
     if (!navigator.clipboard?.writeText) {
@@ -1934,7 +1971,7 @@ function OrderPage({
             继续付款
           </Button>
         )}
-        {order?.pickupUrl && showPickup && order.pickupOpenMode !== "none" && (
+        {order?.pickupUrl && showPickup && order.pickupOpenMode !== "none" && !showEmbeddedSites && (
           <Button className="store-button store-button-compact" icon={<ExportOutlined />} href={order.pickupUrl} target="_blank">
             打开提货网站
           </Button>
@@ -2034,7 +2071,24 @@ function OrderPage({
             </div>
           </aside>
 
-          {hasPickupConfig && (
+          {showEmbeddedSites && (
+            <section className="store-panel order-pickup-panel" style={{ gridColumn: "1 / -1" }}>
+              <div className="order-pickup-header">
+                <div>
+                  <strong>工具网站</strong>
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {embeddedSites.map((site, index) => (
+                  <div key={index} className="order-pickup-panel-frame" style={{ minHeight: "unset" }}>
+                    <div style={{ padding: "8px 0", fontWeight: 600 }}>{site.title}</div>
+                    <iframe className="order-pickup-frame" src={site.url} title={site.title} style={{ minHeight: "calc(100vh - 320px)" }} />
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+          {!showEmbeddedSites && hasPickupConfig && (
             <section className={showPickupFrame ? "store-panel order-pickup-panel order-pickup-panel-frame" : "store-panel order-pickup-panel"}>
               <div className="order-pickup-header">
                 <div>
@@ -2455,6 +2509,8 @@ function DeliveryContent({ payload, embedded = false }: { payload: string; embed
 
 function OrderDetails({ order }: { order: Order }) {
   const showPickup = canShowPickup(order);
+  const embeddedSites = (order.embeddedSites ?? []).filter((s) => s.title && s.url);
+  const hasEmbeddedSites = showPickup && embeddedSites.length > 0;
   return (
     <div className="order-detail">
       <div className="settings-grid">
@@ -2489,7 +2545,23 @@ function OrderDetails({ order }: { order: Order }) {
           <span>{order.manualReason}</span>
         </section>
       )}
-      {showPickup && order.pickupUrl && order.pickupOpenMode !== "none" && (
+      {hasEmbeddedSites && (
+        <section className="order-link-box">
+          <div>
+            <strong>工具网站</strong>
+            <span>订单含 {embeddedSites.length} 个内嵌工具网站。</span>
+          </div>
+          <Button
+            type="primary"
+            href={orderPath(order.id)}
+            target="_blank"
+            icon={<ExportOutlined />}
+          >
+            打开订单详情
+          </Button>
+        </section>
+      )}
+      {!hasEmbeddedSites && showPickup && order.pickupUrl && order.pickupOpenMode !== "none" && (
         <section className="order-link-box">
           <div>
             <strong>订单详情页</strong>
@@ -3106,6 +3178,9 @@ function scalarValueType(value: unknown): ScalarValueType {
 function normalizeProductForm(values: Record<string, unknown>) {
   const deliveryMode = values.deliveryMode as DeliveryMode;
   const upstreamConfig = deliveryMode === "upstream" ? normalizeUpstreamConfigForm(values.upstreamConfig) : null;
+  const embeddedSites: EmbeddedSite[] = ((values.embeddedSites as Array<{ title?: string; url?: string }> | undefined) ?? [])
+    .filter((site) => Boolean(site.title?.trim() && site.url?.trim()))
+    .map((site) => ({ title: site.title!.trim(), url: site.url!.trim() }));
   return {
     slug: values.slug ? String(values.slug) : undefined,
     title: String(values.title ?? ""),
@@ -3116,10 +3191,22 @@ function normalizeProductForm(values: Record<string, unknown>) {
     sortOrder: Number(values.sortOrder ?? 100),
     deliveryMode,
     upstreamChannelId: values.upstreamChannelId ? Number(values.upstreamChannelId) : null,
-    pickupUrl: values.pickupUrl ? String(values.pickupUrl) : null,
-    pickupOpenMode: values.pickupOpenMode as PickupOpenMode,
+    pickupUrl: embeddedSites.length > 0 ? embeddedSites[0].url : (values.pickupUrl ? String(values.pickupUrl) : null),
+    pickupOpenMode: embeddedSites.length > 0 ? "iframe" : ((values.pickupOpenMode as PickupOpenMode) ?? "none"),
+    embeddedSites,
     upstreamConfig
   };
+}
+
+function isUnchangedLegacyPickupSites(product: Product, embeddedSites: EmbeddedSite[]) {
+  if (product.embeddedSites?.length || product.pickupOpenMode !== "iframe" || !product.pickupUrl) {
+    return false;
+  }
+  if (embeddedSites.length !== 1) {
+    return false;
+  }
+  const [site] = embeddedSites;
+  return site.title.trim() === "提货网站" && site.url.trim() === product.pickupUrl;
 }
 
 function normalizeUpstreamChannelForm(values: Record<string, unknown>): UpstreamChannelInput {
