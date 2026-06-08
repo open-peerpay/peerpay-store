@@ -31,7 +31,7 @@ export const PRODUCT_STATUS_LABELS: Record<ProductStatus, string> = {
 
 export const PICKUP_OPEN_MODE_LABELS: Record<PickupOpenMode, string> = {
   none: "不展示",
-  iframe: "内嵌提货",
+  iframe: "订单页内展示",
   new_tab: "新标签打开"
 };
 

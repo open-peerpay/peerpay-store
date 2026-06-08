@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import Markdown from "react-markdown";
 import {
   App as AntApp,
   Button,
@@ -18,7 +17,6 @@ import {
   Switch,
   Table,
   Tag,
-  Tooltip,
   Typography,
   Upload
 } from "antd";
@@ -26,14 +24,14 @@ import type { MenuProps, TableProps } from "antd";
 import {
   AlipayCircleOutlined,
   AppstoreOutlined,
+  ArrowLeftOutlined,
   ArrowDownOutlined,
   ArrowUpOutlined,
   BellOutlined,
   CheckCircleOutlined,
-  CompressOutlined,
-  CopyOutlined,
   DeleteOutlined,
   EyeOutlined,
+  ExportOutlined,
   FileSearchOutlined,
   GlobalOutlined,
   LinkOutlined,
@@ -46,6 +44,7 @@ import {
   ReloadOutlined,
   SearchOutlined,
   SettingOutlined,
+  ShareAltOutlined,
   ShopOutlined,
   ShoppingCartOutlined,
   UploadOutlined,
@@ -165,6 +164,9 @@ const viewTitles: Record<ViewKey, string> = {
 
 const ADMIN_VIEW_STORAGE_KEY = "peerpay-store:admin-view:v1";
 const ADMIN_VIEW_KEYS = new Set<ViewKey>(Object.keys(viewTitles) as ViewKey[]);
+const PRODUCT_PATH_PREFIX = "/products/";
+const ORDER_PATH_PREFIX = "/orders/";
+const DEFAULT_PRODUCT_DETAIL = "该商品支持自助下单、付款后自动发货和历史订单查询。";
 
 const statusColor: Record<string, string> = {
   pending_payment: "gold",
@@ -1188,7 +1190,7 @@ function ProductDrawer({ product, channels, open, onClose, onSaved }: { product:
           </Form.Item>
         </div>
         <Form.Item name="description" label="商品描述">
-          <TextArea rows={4} placeholder="支持 Markdown 格式" />
+          <TextArea rows={4} />
         </Form.Item>
         <Form.Item name="coverUrl" label="封面图">
           <ImageUrlUploadField placeholder="上传封面图后自动填入，也可以粘贴图片 URL" uploadText="上传封面图" />
@@ -1555,6 +1557,7 @@ function CardsDrawer({ product, open, onClose, onSaved }: { product: Product | n
 
 function Storefront() {
   const { message } = AntApp.useApp();
+  const [currentPath, setCurrentPath] = useState(() => window.location.pathname);
   const [settings, setSettings] = useState<StoreSettings>({
     feishuWebhookUrl: null,
     storeName: "PeerPay Store",
@@ -1566,14 +1569,33 @@ function Storefront() {
     peerpayTtlMinutes: 15
   });
   const [products, setProducts] = useState<PublicProduct[]>([]);
-  const [selected, setSelected] = useState<PublicProduct | null>(null);
+  const [productDetail, setProductDetail] = useState<PublicProduct | null>(null);
+  const [productLoading, setProductLoading] = useState(false);
+  const [productError, setProductError] = useState<string | null>(null);
   const [order, setOrder] = useState<Order | null>(null);
+  const [orderLoading, setOrderLoading] = useState(false);
+  const [orderError, setOrderError] = useState<string | null>(null);
   const [recentOrders, setRecentOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [searching, setSearching] = useState(false);
   const [activeAdIndex, setActiveAdIndex] = useState(0);
+  const productsRef = useRef<PublicProduct[]>([]);
   const availabilityRequestId = useRef(0);
   const detailRequestId = useRef(0);
+  const orderRequestId = useRef(0);
+  const productSlug = matchProductSlug(currentPath);
+  const routeOrderId = matchOrderId(currentPath);
+
+  const navigateStore = useCallback((path: string, options: { replace?: boolean } = {}) => {
+    const url = new URL(path, window.location.href);
+    if (options.replace) {
+      window.history.replaceState(null, "", url.toString());
+    } else if (url.pathname !== window.location.pathname || url.search !== window.location.search) {
+      window.history.pushState(null, "", url.toString());
+    }
+    setCurrentPath(url.pathname);
+    window.scrollTo({ top: 0 });
+  }, []);
 
   const refreshProductAvailability = useCallback((items: PublicProduct[]) => {
     const requestId = ++availabilityRequestId.current;
@@ -1584,28 +1606,6 @@ function Storefront() {
       }
       setProducts((current) => current.map((item) => item.slug === product.slug ? fresh : item));
     }));
-  }, []);
-
-  const openProduct = useCallback((product: PublicProduct) => {
-    const requestId = ++detailRequestId.current;
-    setSelected(product);
-    void loadPublicProduct(product.slug)
-      .then((fresh) => {
-        if (detailRequestId.current !== requestId) {
-          return;
-        }
-        setSelected(fresh ?? null);
-      })
-      .catch((error) => {
-        if (detailRequestId.current === requestId) {
-          message.error(error instanceof Error ? error.message : "商品加载失败");
-        }
-      });
-  }, [message]);
-
-  const closeProduct = useCallback(() => {
-    detailRequestId.current += 1;
-    setSelected(null);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -1623,9 +1623,69 @@ function Storefront() {
     }
   }, [message, refreshProductAvailability]);
 
+  const handleOrdered = useCallback((created: Order) => {
+    setOrder(created);
+    setRecentOrders((items) => [created, ...items.filter((item) => item.id !== created.id)]);
+    navigateStore(orderPath(created.id));
+  }, [navigateStore]);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    productsRef.current = products;
+  }, [products]);
+
+  useEffect(() => {
+    const onPopState = () => setCurrentPath(window.location.pathname);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!productSlug) {
+      detailRequestId.current += 1;
+      setProductDetail(null);
+      setProductLoading(false);
+      setProductError(null);
+      return;
+    }
+
+    const requestId = ++detailRequestId.current;
+    const cached = productsRef.current.find((item) => item.slug === productSlug) ?? null;
+    setProductDetail(cached);
+    setProductLoading(!cached);
+    setProductError(null);
+
+    loadPublicProduct(productSlug)
+      .then((fresh) => {
+        if (detailRequestId.current !== requestId) {
+          return;
+        }
+        setProductDetail(fresh);
+        setProductError(fresh ? null : "商品不存在或未上架");
+      })
+      .catch((error) => {
+        if (detailRequestId.current === requestId) {
+          setProductDetail(null);
+          setProductError(error instanceof Error ? error.message : "商品加载失败");
+        }
+      })
+      .finally(() => {
+        if (detailRequestId.current === requestId) {
+          setProductLoading(false);
+        }
+      });
+  }, [productSlug]);
+
+  useEffect(() => {
+    if (routeOrderId) {
+      document.title = order ? `${order.productTitle} - 订单详情` : `订单详情 - ${settings.storeName || "PeerPay Store"}`;
+      return;
+    }
+    document.title = productSlug && productDetail ? `${productDetail.title} - ${settings.storeName}` : settings.storeName || "PeerPay Store";
+  }, [order, productDetail, productSlug, routeOrderId, settings.storeName]);
 
   useEffect(() => {
     const ads = settings.ads ?? [];
@@ -1640,106 +1700,151 @@ function Storefront() {
   }, [settings.ads]);
 
   useEffect(() => {
-    const match = window.location.pathname.match(/^\/orders\/([^/]+)$/);
-    if (!match) {
+    if (!routeOrderId) {
+      orderRequestId.current += 1;
+      setOrder(null);
+      setOrderLoading(false);
+      setOrderError(null);
       return;
     }
-    loadPublicOrder(decodeURIComponent(match[1]))
+    const requestId = ++orderRequestId.current;
+    setOrder((current) => current?.id === routeOrderId ? current : null);
+    setOrderLoading(true);
+    setOrderError(null);
+    loadPublicOrder(routeOrderId)
       .then((loaded) => {
+        if (orderRequestId.current !== requestId) {
+          return;
+        }
         if (loaded) {
           setOrder(loaded);
+          return;
+        }
+        setOrder(null);
+        setOrderError("订单不存在");
+      })
+      .catch((error) => {
+        if (orderRequestId.current === requestId) {
+          setOrder(null);
+          setOrderError(error instanceof Error ? error.message : "订单加载失败");
+          message.error(error instanceof Error ? error.message : "订单加载失败");
         }
       })
-      .catch((error) => message.error(error instanceof Error ? error.message : "订单加载失败"));
-  }, [message]);
+      .finally(() => {
+        if (orderRequestId.current === requestId) {
+          setOrderLoading(false);
+        }
+      });
+  }, [message, routeOrderId]);
 
   return (
     <main className="store-page">
-      <section className="store-shell">
-        <header className="store-masthead">
-          <div>
-            <p className="store-eyebrow">OPEN SOURCE STORE</p>
-            <h1>{settings.storeName}</h1>
-            <Text>{settings.storeNotice || "固定价格、自动发货和自助查询。无需登录即可下单。"}</Text>
-          </div>
-          <div className="store-status-chip">
-            <span>当前商品</span>
-            <strong>{loading ? "-" : products.length}</strong>
-          </div>
-        </header>
-
-        <AdRotator ads={settings.ads ?? []} activeIndex={activeAdIndex} onSelect={setActiveAdIndex} />
-
-        <section className="store-workspace">
-          <div className="store-panel product-board">
-            <div className="store-panel-header">
-              <h2>商品</h2>
-              <Button className="store-button store-button-compact" icon={<ReloadOutlined />} onClick={refresh} loading={loading}>刷新</Button>
+      <section className={routeOrderId ? "store-shell store-shell-order" : "store-shell"}>
+        {routeOrderId ? (
+          <OrderPage
+            order={order}
+            loading={orderLoading}
+            error={orderError}
+            settings={settings}
+            onHome={() => navigateStore("/")}
+          />
+        ) : (
+          <>
+          <header className="store-masthead">
+            <div>
+              <p className="store-eyebrow">OPEN SOURCE STORE</p>
+              <h1>{settings.storeName}</h1>
+              <Text>{settings.storeNotice || "固定价格、自动发货和自助查询。无需登录即可下单。"}</Text>
             </div>
-            <div className="product-grid">
-              {products.map((product) => (
-                <button
-                  className="product-card"
-                  key={product.id}
-                  onClick={() => openProduct(product)}
-                >
-                  <span className="product-card-media">
-                    <ProductVisual product={product} card />
-                    <span className="product-card-stock">
-                      {product.available ? "可购买" : "无库存"}
-                    </span>
-                  </span>
-                  <span className="product-card-body">
-                    <span className="product-card-title">{product.title}</span>
-                    {product.description && <span className="product-card-desc multiline-text">{product.description}</span>}
-                    <span className="product-card-footer">
-                      <span className="product-card-meta">¥{product.price}</span>
-                      <span className="product-card-tags">
-                        <StatusTag value={product.available ? "active" : "archived"} text={product.available ? "有货" : "无库存"} />
-                      </span>
-                    </span>
-                  </span>
-                </button>
-              ))}
+            <div className="store-status-chip">
+              <span>当前商品</span>
+              <strong>{loading ? "-" : products.length}</strong>
             </div>
-          </div>
+          </header>
 
-          <div className="store-panel lookup-panel">
-            <div className="store-panel-header">
-              <h2>订单</h2>
-              <span className="panel-mark">#</span>
-            </div>
-            <div className="lookup-body">
-              <OrderSearch
-                searching={searching}
-                onSearch={async (contact) => {
-                  setSearching(true);
-                  try {
-                    setRecentOrders(await searchOrders(contact));
-                  } catch (error) {
-                    message.error(error instanceof Error ? error.message : "查询失败");
-                  } finally {
-                    setSearching(false);
-                  }
-                }}
+            {productSlug ? (
+              <ProductDetailPage
+                product={productDetail}
+                loading={productLoading}
+                error={productError}
+                settings={settings}
+                defaultPaymentChannel={settings.peerpayPaymentChannel}
+                onBack={() => navigateStore("/")}
+                onOrdered={handleOrdered}
               />
-              <RecentOrders orders={recentOrders} onOpen={setOrder} />
-            </div>
-          </div>
-        </section>
-      </section>
+          ) : (
+            <>
+              <AdRotator ads={settings.ads ?? []} activeIndex={activeAdIndex} onSelect={setActiveAdIndex} />
 
-      <ProductModal
-        product={selected}
-        defaultPaymentChannel={settings.peerpayPaymentChannel}
-        onClose={closeProduct}
-        onOrdered={(created) => {
-          closeProduct();
-          setOrder(created);
-          setRecentOrders((items) => [created, ...items.filter((item) => item.id !== created.id)]);
-        }}
-      />
-      <OrderModal order={order} onClose={() => setOrder(null)} />
+              <section className="store-workspace">
+                <div className="store-panel product-board">
+                  <div className="store-panel-header">
+                    <h2>商品</h2>
+                    <Button className="store-button store-button-compact" icon={<ReloadOutlined />} onClick={refresh} loading={loading}>刷新</Button>
+                  </div>
+                  <div className="product-grid">
+                    {products.map((product) => {
+                      const summary = plainTextFromMarkdown(product.description);
+                      return (
+                        <a
+                          className="product-card"
+                          key={product.id}
+                          href={productPath(product.slug)}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            navigateStore(productPath(product.slug));
+                          }}
+                        >
+                          <span className="product-card-media">
+                            <ProductVisual product={product} card />
+                            <span className="product-card-stock">
+                              {product.available ? "可购买" : "无库存"}
+                            </span>
+                          </span>
+                          <span className="product-card-body">
+                            <span className="product-card-title">{product.title}</span>
+                            {summary && <span className="product-card-desc multiline-text">{summary}</span>}
+                            <span className="product-card-footer">
+                              <span className="product-card-meta">¥{product.price}</span>
+                              <span className="product-card-tags">
+                                <StatusTag value={product.available ? "active" : "archived"} text={product.available ? "有货" : "无库存"} />
+                              </span>
+                            </span>
+                          </span>
+                        </a>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="store-panel lookup-panel">
+                  <div className="store-panel-header">
+                    <h2>订单</h2>
+                    <span className="panel-mark">#</span>
+                  </div>
+                  <div className="lookup-body">
+                    <OrderSearch
+                      searching={searching}
+                      onSearch={async (contact) => {
+                        setSearching(true);
+                        try {
+                          setRecentOrders(await searchOrders(contact));
+                        } catch (error) {
+                          message.error(error instanceof Error ? error.message : "查询失败");
+                        } finally {
+                          setSearching(false);
+                        }
+                      }}
+                    />
+                    <RecentOrders orders={recentOrders} onOpen={(item) => navigateStore(orderPath(item.id))} />
+                  </div>
+                </div>
+              </section>
+            </>
+          )}
+          </>
+        )}
+      </section>
     </main>
   );
 }
@@ -1784,15 +1889,298 @@ function AdRotator({ ads, activeIndex, onSelect }: { ads: StoreAd[]; activeIndex
   );
 }
 
-function ProductModal({
+function OrderPage({
+  order,
+  loading,
+  error,
+  settings,
+  onHome
+}: {
+  order: Order | null;
+  loading: boolean;
+  error: string | null;
+  settings: StoreSettings;
+  onHome: () => void;
+}) {
+  const showPickup = order ? canShowPickup(order) : false;
+  const hasPickupConfig = Boolean(order?.pickupUrl && order.pickupOpenMode !== "none");
+  const showPickupFrame = Boolean(order?.pickupUrl && showPickup && order.pickupOpenMode === "iframe");
+  const showPickupExternal = Boolean(order?.pickupUrl && showPickup && order.pickupOpenMode === "new_tab");
+  const state = orderPageState(order, loading, error);
+
+  return (
+    <div className="order-page">
+      <div className="order-page-toolbar">
+        <Button className="store-button store-button-compact" icon={<ArrowLeftOutlined />} onClick={onHome}>商品首页</Button>
+        {order?.status === "pending_payment" && order.peerpayPayUrl && (
+          <Button className="store-button store-button-primary store-button-compact" href={order.peerpayPayUrl}>
+            继续付款
+          </Button>
+        )}
+        {order?.pickupUrl && showPickup && order.pickupOpenMode !== "none" && (
+          <Button className="store-button store-button-compact" icon={<ExportOutlined />} href={order.pickupUrl} target="_blank">
+            打开提货网站
+          </Button>
+        )}
+      </div>
+
+      {!order && (
+        <section className="store-panel order-page-state">
+          <div className="order-state-copy">
+            <span className="panel-mark">{loading ? "..." : "!"}</span>
+            <div>
+              <h2>{state.title}</h2>
+              <p>{state.body}</p>
+            </div>
+          </div>
+          {!loading && <Button className="store-button" onClick={onHome}>返回商品首页</Button>}
+        </section>
+      )}
+
+      {order && (
+        <section className="order-page-layout">
+          <article className="store-panel order-main-panel">
+            <div className="order-hero">
+              <div>
+                <Text className="store-eyebrow">{settings.storeName || "PeerPay Store"}</Text>
+                <h1>{order.productTitle}</h1>
+                <div className="order-id-line">
+                  <span>订单号</span>
+                  <Text copyable>{order.id}</Text>
+                </div>
+              </div>
+              <StatusTag value={order.status} text={ORDER_STATUS_LABELS[order.status]} />
+            </div>
+
+            {order.status === "pending_payment" && order.peerpayPayUrl && (
+              <section className="payment-box order-page-payment">
+                <CheckCircleOutlined />
+                <div>
+                  <strong>订单已创建，等待付款</strong>
+                  <span>PeerPay 应付金额：¥{order.peerpayActualAmount ?? order.amount}</span>
+                  <span>支付方式：{paymentChannelText(order.peerpayPaymentChannel)}</span>
+                </div>
+                <Button className="store-button store-button-primary" href={order.peerpayPayUrl}>继续付款</Button>
+              </section>
+            )}
+
+            <section className="order-section order-delivery-section">
+              <div className="order-section-header">
+                <div>
+                  <strong>发货内容</strong>
+                  <span>卡密、兑换码或取货说明会在这里展示。</span>
+                </div>
+              </div>
+              {order.deliveryPayload ? (
+                <pre>{order.deliveryPayload}</pre>
+              ) : (
+                <div className="order-empty-copy">
+                  <strong>{state.title}</strong>
+                  <span>{state.body}</span>
+                </div>
+              )}
+            </section>
+
+            {order.remark && (
+              <section className="remark-box">
+                <MessageOutlined />
+                <span>{order.remark}</span>
+              </section>
+            )}
+
+            {order.manualReason && (
+              <section className="manual-box">
+                <BellOutlined />
+                <span>{order.manualReason}</span>
+              </section>
+            )}
+          </article>
+
+          <aside className="store-panel order-summary-panel">
+            <div className="store-panel-header">
+              <h2>订单信息</h2>
+              <span className="panel-mark">#</span>
+            </div>
+            <div className="order-summary-grid">
+              <InfoCell label="金额" value={`¥${order.amount}`} />
+              <InfoCell label="联系方式" value={order.contactValue} />
+              <InfoCell label="支付方式" value={paymentChannelText(order.peerpayPaymentChannel)} />
+              <InfoCell label="下单时间" value={formatDate(order.createdAt)} />
+            </div>
+          </aside>
+
+          {hasPickupConfig && (
+            <section className={showPickupFrame ? "store-panel order-pickup-panel order-pickup-panel-frame" : "store-panel order-pickup-panel"}>
+              <div className="order-pickup-header">
+                <div>
+                  <strong>提货</strong>
+                  <span>{showPickup ? "在订单详情页继续完成提货操作。" : "付款或商家处理完成后，这里会显示提货入口。"}</span>
+                </div>
+                {showPickup && order.pickupUrl && (
+                  <Button className="store-button store-button-compact" icon={<ExportOutlined />} href={order.pickupUrl} target="_blank">
+                    打开提货网站
+                  </Button>
+                )}
+              </div>
+
+              {showPickupFrame && order.pickupUrl && (
+                <iframe className="order-pickup-frame" src={order.pickupUrl} title={`${order.productTitle} 提货`} />
+              )}
+
+              {!showPickupFrame && (
+                <div className="order-pickup-state">
+                  <div className="order-empty-copy">
+                    <strong>{showPickupExternal ? "进入提货网站" : "暂不可提货"}</strong>
+                    <span>
+                      {showPickupExternal
+                        ? "此商品需要打开商家提货网站完成后续操作。"
+                        : state.body}
+                    </span>
+                  </div>
+                  {showPickupExternal && order.pickupUrl && (
+                    <Button className="store-button store-button-primary" icon={<ExportOutlined />} href={order.pickupUrl} target="_blank">
+                      打开提货网站
+                    </Button>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function orderPageState(order: Order | null, loading: boolean, error: string | null) {
+  if (loading) {
+    return { title: "订单加载中", body: "正在读取订单状态、发货内容和提货信息。" };
+  }
+  if (error) {
+    return { title: error, body: "请确认订单号是否完整，或回到商品首页重新查询订单。" };
+  }
+  if (!order) {
+    return { title: "订单不存在", body: "没有找到这个订单，无法展示详情。" };
+  }
+  if (order.status === "pending_payment") {
+    return { title: "等待付款", body: "付款完成后，卡密、发货内容和可用提货入口会显示在这个订单页面。" };
+  }
+  if (order.status === "cancelled") {
+    return { title: "订单已取消", body: "这个订单已取消，不会继续发货或开放提货。" };
+  }
+  if (order.status === "failed") {
+    return { title: "订单失败", body: "这个订单没有完成发货，请联系商家核对处理结果。" };
+  }
+  if (order.status === "needs_manual") {
+    return { title: "订单处理中", body: "订单需要商家人工处理，处理结果会显示在这个页面。" };
+  }
+  if (order.status === "paid") {
+    return { title: "正在处理发货", body: "付款已确认，系统正在准备卡密、发货内容或提货入口。" };
+  }
+  return { title: "暂无发货内容", body: "订单已进入已发货状态，但当前没有记录发货内容；请联系商家核对。" };
+}
+
+function ProductDetailPage({
   product,
+  loading,
+  error,
+  settings,
   defaultPaymentChannel,
-  onClose,
+  onBack,
   onOrdered
 }: {
   product: PublicProduct | null;
+  loading: boolean;
+  error: string | null;
+  settings: StoreSettings;
   defaultPaymentChannel: PaymentChannel;
-  onClose: () => void;
+  onBack: () => void;
+  onOrdered: (order: Order) => void;
+}) {
+  const { message } = AntApp.useApp();
+  const shareTarget = product ? productShareTarget(settings, product.slug) : null;
+  const shareUrl = shareTarget?.url || (product ? new URL(productPath(product.slug), window.location.origin).toString() : "");
+
+  const handleShare = async () => {
+    if (!product) {
+      return;
+    }
+    if (shareTarget?.error) {
+      message.error(shareTarget.error);
+      return;
+    }
+    try {
+      const action = await shareProductLink(product, shareUrl);
+      if (action !== "cancelled") {
+        message.success(action === "shared" ? "已打开系统分享" : "商品链接已复制");
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "分享失败");
+    }
+  };
+
+  return (
+    <div className="product-detail-page">
+      <div className="product-detail-toolbar">
+        <Button className="store-button store-button-compact" icon={<ArrowLeftOutlined />} onClick={onBack}>返回商品</Button>
+        {product && (
+          <Button className="store-button store-button-compact" icon={<ShareAltOutlined />} onClick={handleShare}>
+            分享商品
+          </Button>
+        )}
+      </div>
+
+      {!product && (
+        <section className="store-panel product-detail-state">
+          <h2>{loading ? "商品加载中" : error ?? "商品不存在或未上架"}</h2>
+          {!loading && <Button className="store-button store-button-primary" onClick={onBack}>返回商品列表</Button>}
+        </section>
+      )}
+
+      {product && (
+        <section className="product-detail-layout">
+          <article className="store-panel product-detail-overview">
+            <div className="product-detail-hero">
+              <div className="product-detail-media">
+                <ProductVisual product={product} large />
+              </div>
+              <div className="product-detail-summary">
+                <Text className="store-eyebrow">商品详情</Text>
+                <Title id="product-detail-title" level={2}>{product.title}</Title>
+                <div className="price-line">¥{product.price}</div>
+                <div className="tag-row">
+                  <StatusTag value={product.available ? "active" : "archived"} text={product.available ? "有货" : "无库存"} />
+                </div>
+                {shareTarget?.error ? (
+                  <span className="product-detail-link product-detail-link-error">{shareTarget.error}</span>
+                ) : (
+                  <a className="product-detail-link" href={shareUrl}>{shareUrl}</a>
+                )}
+              </div>
+            </div>
+            <MarkdownContent value={product.description || DEFAULT_PRODUCT_DETAIL} />
+          </article>
+
+          <aside className="store-panel product-checkout-panel">
+            <div className="store-panel-header product-checkout-header">
+              <h2>下单</h2>
+              <span className="panel-mark">¥</span>
+            </div>
+            <ProductOrderForm product={product} defaultPaymentChannel={defaultPaymentChannel} onOrdered={onOrdered} />
+          </aside>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function ProductOrderForm({
+  product,
+  defaultPaymentChannel,
+  onOrdered
+}: {
+  product: PublicProduct;
+  defaultPaymentChannel: PaymentChannel;
   onOrdered: (order: Order) => void;
 }) {
   const { message } = AntApp.useApp();
@@ -1800,7 +2188,6 @@ function ProductModal({
   const [loading, setLoading] = useState(false);
   const [captcha, setCaptcha] = useState<PublicCaptcha | null>(null);
   const [captchaLoading, setCaptchaLoading] = useState(false);
-  const productSlug = product?.slug;
 
   const refreshCaptcha = useCallback(async (slug: string) => {
     setCaptchaLoading(true);
@@ -1816,206 +2203,409 @@ function ProductModal({
   }, [form, message]);
 
   useEffect(() => {
-    if (product) {
-      form.setFieldsValue({
-        contactValue: "",
-        paymentChannel: defaultPaymentChannel,
-        captcha: "",
-        remark: ""
-      });
-      setCaptcha(null);
-      if (product.available && product.captchaRequired) {
-        void refreshCaptcha(product.slug);
-      }
-      return;
-    }
-    form.resetFields();
+    form.setFieldsValue({
+      contactValue: "",
+      paymentChannel: defaultPaymentChannel,
+      captcha: "",
+      remark: ""
+    });
     setCaptcha(null);
     setCaptchaLoading(false);
-  }, [defaultPaymentChannel, form, productSlug, refreshCaptcha]);
-
-  return (
-    <StoreDialog open={Boolean(product)} onClose={onClose} labelledBy="product-dialog-title">
-      {product && (
-        <div className="store-dialog-card">
-          <div className="store-dialog-media">
-            <ProductVisual product={product} large />
-          </div>
-          <section className="store-dialog-copy">
-            <Text className="store-eyebrow">商品详情</Text>
-            <Title id="product-dialog-title" level={2}>{product.title}</Title>
-            <div className="product-description-text">
-              <Markdown>{product.description || "该商品支持自助下单、付款后自动发货和历史订单查询。"}</Markdown>
-            </div>
-            <div className="price-line">¥{product.price}</div>
-            <div className="tag-row">
-              <StatusTag value={product.available ? "active" : "archived"} text={product.available ? "有货" : "无库存"} />
-              <Tag>{PICKUP_OPEN_MODE_LABELS[product.pickupOpenMode]}</Tag>
-            </div>
-            <Form
-              form={form}
-              layout="vertical"
-              disabled={!product.available}
-              onFinish={async (values) => {
-                setLoading(true);
-                try {
-                  const result = await createPublicOrder({
-                    slug: product.slug,
-                    contactValue: values.contactValue,
-                    paymentChannel: values.paymentChannel,
-                    remark: values.remark,
-                    captcha: values.captcha,
-                    captchaToken: captcha?.token ?? undefined
-                  });
-                  await rememberOrder(result.order.id);
-                  if (result.paymentUrl) {
-                    window.location.assign(result.paymentUrl);
-                    return;
-                  }
-                  onOrdered(result.order);
-                } catch (error) {
-                  message.error(storefrontErrorMessage(error));
-                } finally {
-                  setLoading(false);
-                }
-              }}
-            >
-              <Form.Item name="contactValue" label="联系方式" extra="可填写 QQ、手机号码或者邮箱，用于查询历史订单。" rules={[{ required: true }]}>
-                <Input size="large" placeholder="QQ / 手机号码 / 邮箱" />
-              </Form.Item>
-              <Form.Item name="paymentChannel" label="支付方式" rules={[{ required: true, message: "请选择支付方式" }]}>
-                <Radio.Group className="payment-channel-picker">
-                  <Radio.Button value="alipay">
-                    <AlipayCircleOutlined />
-                    <span>{PAYMENT_CHANNEL_LABELS.alipay}</span>
-                  </Radio.Button>
-                  <Radio.Button value="wechat">
-                    <WechatOutlined />
-                    <span>{PAYMENT_CHANNEL_LABELS.wechat}</span>
-                  </Radio.Button>
-                </Radio.Group>
-              </Form.Item>
-              {product.captchaRequired && (
-                <Form.Item label="验证码" required>
-                  <div className="captcha-field">
-                    <div className="captcha-image-box">
-                      {captcha?.imageDataUrl ? (
-                        <img src={captcha.imageDataUrl} alt="验证码" />
-                      ) : (
-                        <span>{captchaLoading ? "加载中" : "验证码"}</span>
-                      )}
-                    </div>
-                    <Button className="store-button store-button-compact" icon={<ReloadOutlined />} loading={captchaLoading} onClick={() => refreshCaptcha(product.slug)}>
-                      刷新
-                    </Button>
-                    <Form.Item name="captcha" noStyle rules={[{ required: true, whitespace: true, message: "请输入验证码" }]}>
-                      <Input size="large" placeholder="输入验证码" autoComplete="off" />
-                    </Form.Item>
-                  </div>
-                </Form.Item>
-              )}
-              <Form.Item name="remark" label="备注" extra="可填写发货偏好、人工处理说明或其他需要核对的信息。" rules={[{ max: 500, message: "备注不能超过 500 字" }]}>
-                <TextArea rows={3} maxLength={500} showCount placeholder="选填，最多 500 字" />
-              </Form.Item>
-              <Button className="store-button store-button-primary store-button-full" htmlType="submit" loading={loading} block disabled={!product.available} icon={<ShoppingCartOutlined />}>
-                {product.available ? "提交订单并付款" : "无库存"}
-              </Button>
-            </Form>
-          </section>
-        </div>
-      )}
-    </StoreDialog>
-  );
-}
-
-function OrderModal({ order, onClose }: { order: Order | null; onClose: () => void }) {
-  return (
-    <StoreDialog open={Boolean(order)} onClose={onClose} labelledBy="order-dialog-title">
-      {order && (
-        <div className="store-dialog-card store-dialog-card-wide">
-          <section className="store-dialog-copy store-dialog-copy-wide">
-            <Text className="store-eyebrow">订单详情</Text>
-            <Title id="order-dialog-title" level={2}>{order.id}</Title>
-            <OrderDetails order={order} publicView />
-          </section>
-        </div>
-      )}
-    </StoreDialog>
-  );
-}
-
-function StoreDialog({ open, onClose, labelledBy, children }: { open: boolean; onClose: () => void; labelledBy: string; children: ReactNode }) {
-  useEffect(() => {
-    if (!open) {
-      return;
+    if (product.available && product.captchaRequired) {
+      void refreshCaptcha(product.slug);
     }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, open]);
+  }, [defaultPaymentChannel, form, product.slug, refreshCaptcha]);
 
-  if (!open) {
+  return (
+    <Form
+      form={form}
+      className="product-checkout-form"
+      layout="vertical"
+      disabled={!product.available}
+      onFinish={async (values) => {
+        setLoading(true);
+        try {
+          const result = await createPublicOrder({
+            slug: product.slug,
+            contactValue: values.contactValue,
+            paymentChannel: values.paymentChannel,
+            remark: values.remark,
+            captcha: values.captcha,
+            captchaToken: captcha?.token ?? undefined
+          });
+          await rememberOrder(result.order.id);
+          if (result.paymentUrl) {
+            window.location.assign(result.paymentUrl);
+            return;
+          }
+          onOrdered(result.order);
+        } catch (error) {
+          message.error(storefrontErrorMessage(error));
+        } finally {
+          setLoading(false);
+        }
+      }}
+    >
+      <Form.Item name="contactValue" label="联系方式" extra="可填写 QQ、手机号码或者邮箱，用于查询历史订单。" rules={[{ required: true }]}>
+        <Input size="large" placeholder="QQ / 手机号码 / 邮箱" />
+      </Form.Item>
+      <Form.Item name="paymentChannel" label="支付方式" rules={[{ required: true, message: "请选择支付方式" }]}>
+        <Radio.Group className="payment-channel-picker">
+          <Radio.Button value="alipay">
+            <AlipayCircleOutlined />
+            <span>{PAYMENT_CHANNEL_LABELS.alipay}</span>
+          </Radio.Button>
+          <Radio.Button value="wechat">
+            <WechatOutlined />
+            <span>{PAYMENT_CHANNEL_LABELS.wechat}</span>
+          </Radio.Button>
+        </Radio.Group>
+      </Form.Item>
+      {product.captchaRequired && (
+        <Form.Item label="验证码" required>
+          <div className="captcha-field">
+            <div className="captcha-image-box">
+              {captcha?.imageDataUrl ? (
+                <img src={captcha.imageDataUrl} alt="验证码" />
+              ) : (
+                <span>{captchaLoading ? "加载中" : "验证码"}</span>
+              )}
+            </div>
+            <Button className="store-button store-button-compact" icon={<ReloadOutlined />} loading={captchaLoading} onClick={() => refreshCaptcha(product.slug)}>
+              刷新
+            </Button>
+            <Form.Item name="captcha" noStyle rules={[{ required: true, whitespace: true, message: "请输入验证码" }]}>
+              <Input size="large" placeholder="输入验证码" autoComplete="off" />
+            </Form.Item>
+          </div>
+        </Form.Item>
+      )}
+      <Form.Item name="remark" label="备注" extra="可填写发货偏好、人工处理说明或其他需要核对的信息。" rules={[{ max: 500, message: "备注不能超过 500 字" }]}>
+        <TextArea rows={3} maxLength={500} showCount placeholder="选填，最多 500 字" />
+      </Form.Item>
+      <Button className="store-button store-button-primary store-button-full" htmlType="submit" loading={loading} block disabled={!product.available} icon={<ShoppingCartOutlined />}>
+        {product.available ? "提交订单并付款" : "无库存"}
+      </Button>
+    </Form>
+  );
+}
+
+type MarkdownBlock =
+  | { type: "heading"; level: 1 | 2 | 3 | 4; text: string }
+  | { type: "paragraph"; text: string }
+  | { type: "quote"; text: string }
+  | { type: "ul"; items: string[] }
+  | { type: "ol"; items: string[] }
+  | { type: "code"; text: string; language: string | null }
+  | { type: "hr" };
+
+type ShareProductResult = "shared" | "copied" | "cancelled";
+
+function MarkdownContent({ value }: { value: string }) {
+  const blocks = parseMarkdownBlocks(value);
+  if (!blocks.length) {
     return null;
   }
-
   return (
-    <div className="store-dialog-layer" role="dialog" aria-modal="true" aria-labelledby={labelledBy}>
-      <button className="store-dialog-backdrop" onClick={onClose} aria-label="关闭弹窗" />
-      <div className="store-dialog-frame">
-        <button className="store-dialog-close" onClick={onClose} aria-label="关闭弹窗">×</button>
-        {children}
-      </div>
+    <div className="markdown-content">
+      {blocks.map((block, index) => renderMarkdownBlock(block, `md-${index}`))}
     </div>
   );
 }
 
-function DeliveryContent({ payload }: { payload: string }) {
-  const { message } = AntApp.useApp();
-  let parsed: unknown;
-  let isJson = false;
-  try { parsed = JSON.parse(payload); isJson = true; } catch { /* not json */ }
-  const formatted = isJson ? JSON.stringify(parsed, null, 2) : payload;
-  const compressed = isJson ? JSON.stringify(parsed) : payload;
-
-  const copyText = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      message.success("已复制");
-    } catch {
-      message.error("复制失败，请手动复制");
+function renderMarkdownBlock(block: MarkdownBlock, key: string) {
+  if (block.type === "heading") {
+    const content = renderInlineWithBreaks(block.text, key);
+    if (block.level === 1) {
+      return <h1 key={key}>{content}</h1>;
     }
-  };
+    if (block.level === 2) {
+      return <h2 key={key}>{content}</h2>;
+    }
+    if (block.level === 3) {
+      return <h3 key={key}>{content}</h3>;
+    }
+    return <h4 key={key}>{content}</h4>;
+  }
+  if (block.type === "quote") {
+    return <blockquote key={key}>{renderInlineWithBreaks(block.text, key)}</blockquote>;
+  }
+  if (block.type === "ul") {
+    return (
+      <ul key={key}>
+        {block.items.map((item, index) => <li key={`${key}-${index}`}>{renderInlineWithBreaks(item, `${key}-${index}`)}</li>)}
+      </ul>
+    );
+  }
+  if (block.type === "ol") {
+    return (
+      <ol key={key}>
+        {block.items.map((item, index) => <li key={`${key}-${index}`}>{renderInlineWithBreaks(item, `${key}-${index}`)}</li>)}
+      </ol>
+    );
+  }
+  if (block.type === "code") {
+    return (
+      <pre key={key} data-language={block.language ?? undefined}>
+        <code>{block.text}</code>
+      </pre>
+    );
+  }
+  if (block.type === "hr") {
+    return <hr key={key} />;
+  }
+  return <p key={key}>{renderInlineWithBreaks(block.text, key)}</p>;
+}
 
+function parseMarkdownBlocks(value: string): MarkdownBlock[] {
+  const text = value.replace(/\r\n?/g, "\n").trim();
+  if (!text) {
+    return [];
+  }
+  const blocks: MarkdownBlock[] = [];
+  const lines = text.split("\n");
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    const fenceMatch = trimmed.match(/^```(\S*)/);
+    if (fenceMatch) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) {
+        index += 1;
+      }
+      blocks.push({ type: "code", text: codeLines.join("\n"), language: fenceMatch[1] || null });
+      continue;
+    }
+
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      blocks.push({ type: "hr" });
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (headingMatch) {
+      blocks.push({ type: "heading", level: headingMatch[1].length as 1 | 2 | 3 | 4, text: headingMatch[2].trim() });
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      const quoteLines: string[] = [];
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      blocks.push({ type: "quote", text: quoteLines.join("\n") });
+      continue;
+    }
+
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*[-*+]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*[-*+]\s+/, "").trim());
+        index += 1;
+      }
+      blocks.push({ type: "ul", items });
+      continue;
+    }
+
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*\d+\.\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*\d+\.\s+/, "").trim());
+        index += 1;
+      }
+      blocks.push({ type: "ol", items });
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (
+      index < lines.length
+      && lines[index].trim()
+      && !isMarkdownBlockStart(lines[index])
+    ) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+    blocks.push({ type: "paragraph", text: paragraphLines.join("\n") });
+  }
+
+  return blocks;
+}
+
+function isMarkdownBlockStart(line: string) {
+  const trimmed = line.trim();
   return (
-    <section className="delivery-box">
-      <Text type="secondary">发货内容</Text>
-      <div className="delivery-copy-actions">
-        <Tooltip title="复制">
-          <button onClick={() => copyText(formatted)}>
-            <CopyOutlined />
-          </button>
-        </Tooltip>
-        {isJson && (
-          <Tooltip title="压缩复制">
-            <button onClick={() => copyText(compressed)}>
-              <CompressOutlined />
-            </button>
-          </Tooltip>
-        )}
-      </div>
-      <pre>{formatted}</pre>
-    </section>
+    /^```/.test(trimmed)
+    || /^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)
+    || /^(#{1,4})\s+/.test(trimmed)
+    || /^>\s?/.test(trimmed)
+    || /^\s*[-*+]\s+/.test(line)
+    || /^\s*\d+\.\s+/.test(line)
   );
 }
 
-function OrderDetails({ order, publicView = false }: { order: Order; publicView?: boolean }) {
+function renderInlineWithBreaks(text: string, keyPrefix: string) {
+  const lines = text.split("\n");
+  const nodes: ReactNode[] = [];
+  lines.forEach((line, index) => {
+    if (index > 0) {
+      nodes.push(<br key={`${keyPrefix}-br-${index}`} />);
+    }
+    nodes.push(...renderInlineMarkdown(line, `${keyPrefix}-${index}`));
+  });
+  return nodes;
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /(`[^`]+`|\[([^\]\n]+)\]\(([^)\n]+)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*|_([^_\n]+)_)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text))) {
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index));
+    }
+    const token = match[0];
+    const key = `${keyPrefix}-${match.index}`;
+    if (token.startsWith("`")) {
+      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (match[2] !== undefined && match[3] !== undefined) {
+      const href = safeMarkdownHref(match[3]);
+      nodes.push(href ? (
+        <a key={key} href={href} target={isExternalHref(href) ? "_blank" : undefined} rel={isExternalHref(href) ? "noreferrer" : undefined}>
+          {renderInlineMarkdown(match[2], key)}
+        </a>
+      ) : match[2]);
+    } else if (match[4] !== undefined || match[5] !== undefined) {
+      nodes.push(<strong key={key}>{renderInlineMarkdown(match[4] ?? match[5] ?? "", key)}</strong>);
+    } else {
+      nodes.push(<em key={key}>{renderInlineMarkdown(match[6] ?? match[7] ?? "", key)}</em>);
+    }
+    lastIndex = pattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+  return nodes;
+}
+
+function safeMarkdownHref(value: string) {
+  const href = value.trim().replace(/^<(.+)>$/, "$1");
+  if (!href) {
+    return null;
+  }
+  if (href.startsWith("#") || href.startsWith("/") || href.startsWith("./") || href.startsWith("../")) {
+    return href;
+  }
+  try {
+    const url = new URL(href, window.location.origin);
+    return ["http:", "https:", "mailto:", "tel:"].includes(url.protocol) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function isExternalHref(href: string) {
+  return /^https?:\/\//i.test(href);
+}
+
+function plainTextFromMarkdown(value: string) {
+  return value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^>\s?/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/[`*_~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function productPath(slug: string) {
+  return `${PRODUCT_PATH_PREFIX}${encodeURIComponent(slug)}`;
+}
+
+function orderPath(id: string) {
+  return `${ORDER_PATH_PREFIX}${encodeURIComponent(id)}`;
+}
+
+function matchProductSlug(pathname: string) {
+  const match = pathname.match(/^\/products\/([^/]+)\/?$/);
+  return match ? decodeRoutePart(match[1]) : null;
+}
+
+function matchOrderId(pathname: string) {
+  const match = pathname.match(/^\/orders\/([^/]+)\/?$/);
+  return match ? decodeRoutePart(match[1]) : null;
+}
+
+function decodeRoutePart(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function productShareTarget(settings: StoreSettings, slug: string) {
+  const configuredBase = settings.storeBaseUrl?.trim();
+  if (!configuredBase) {
+    return { url: new URL(productPath(slug), window.location.origin).toString(), error: null };
+  }
+  try {
+    const baseUrl = new URL(configuredBase);
+    if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") {
+      return { url: "", error: "Store 公开访问地址必须是 HTTP/HTTPS URL" };
+    }
+    return { url: new URL(productPath(slug), baseUrl).toString(), error: null };
+  } catch {
+    return { url: "", error: "Store 公开访问地址不是有效 URL，请在后台商店配置修正" };
+  }
+}
+
+async function shareProductLink(product: PublicProduct, url: string): Promise<ShareProductResult> {
+  const summary = plainTextFromMarkdown(product.description).slice(0, 140) || DEFAULT_PRODUCT_DETAIL;
+  const shareData: ShareData = { title: product.title, text: summary, url };
+  if (navigator.share) {
+    try {
+      await navigator.share(shareData);
+      return "shared";
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return "cancelled";
+      }
+    }
+  }
+  if (!navigator.clipboard?.writeText) {
+    throw new Error("当前浏览器不支持自动复制，请手动复制地址栏链接");
+  }
+  await navigator.clipboard.writeText(url);
+  return "copied";
+}
+
+function OrderDetails({ order }: { order: Order }) {
   const showPickup = canShowPickup(order);
   return (
-    <div className={publicView ? "order-detail public-order-detail" : "order-detail"}>
+    <div className="order-detail">
       <div className="settings-grid">
         <InfoCell label="商品" value={order.productTitle} />
         <InfoCell label="金额" value={`¥${order.amount}`} />
@@ -2032,7 +2622,7 @@ function OrderDetails({ order, publicView = false }: { order: Order; publicView?
             <span>PeerPay 应付金额：¥{order.peerpayActualAmount ?? order.amount}</span>
             <span>支付方式：{paymentChannelText(order.peerpayPaymentChannel)}</span>
           </div>
-          <Button className={publicView ? "store-button store-button-primary" : undefined} type={publicView ? undefined : "primary"} href={order.peerpayPayUrl}>继续付款</Button>
+          <Button type="primary" href={order.peerpayPayUrl}>继续付款</Button>
         </section>
       )}
       {order.remark && (
@@ -2041,18 +2631,33 @@ function OrderDetails({ order, publicView = false }: { order: Order; publicView?
           <span>{order.remark}</span>
         </section>
       )}
-      {order.deliveryPayload && <DeliveryContent payload={order.deliveryPayload} />}
+      {order.deliveryPayload && (
+        <section className="delivery-box">
+          <Text type="secondary">发货内容</Text>
+          <pre>{order.deliveryPayload}</pre>
+        </section>
+      )}
       {order.manualReason && (
         <section className="manual-box">
           <BellOutlined />
-          <span>{publicView ? "订单处理中，请联系商家处理" : order.manualReason}</span>
+          <span>{order.manualReason}</span>
         </section>
       )}
-      {showPickup && order.pickupUrl && order.pickupOpenMode === "new_tab" && (
-        <Button className={publicView ? "store-button store-button-primary" : undefined} type={publicView ? undefined : "primary"} href={order.pickupUrl} target="_blank">打开提货网站</Button>
-      )}
-      {showPickup && order.pickupUrl && order.pickupOpenMode === "iframe" && (
-        <iframe className="pickup-frame" src={order.pickupUrl} title="自助提货" />
+      {showPickup && order.pickupUrl && order.pickupOpenMode !== "none" && (
+        <section className="order-link-box">
+          <div>
+            <strong>订单详情页</strong>
+            <span>在同一个页面查看发货内容与提货入口。</span>
+          </div>
+          <Button
+            type="primary"
+            href={orderPath(order.id)}
+            target="_blank"
+            icon={<ExportOutlined />}
+          >
+            打开订单详情
+          </Button>
+        </section>
       )}
     </div>
   );

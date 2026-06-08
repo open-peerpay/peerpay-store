@@ -246,11 +246,11 @@ describe("store services", () => {
     }
   });
 
-  test("hides embedded pickup until the order is paid", async () => {
+  test("hides order page pickup until the order is paid", async () => {
     const ctx = createTestContext();
     const restorePeerPay = mockPeerPayFetch();
     createProduct(ctx, {
-      title: "内嵌提货商品",
+      title: "订单页提货商品",
       slug: "pickup-iframe",
       price: "12.00",
       status: "active",

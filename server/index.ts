@@ -17,6 +17,9 @@ export function startServer() {
       "/": app as never,
       "/orders": app as never,
       "/orders/:id": app as never,
+      "/orders/:id/": app as never,
+      "/products/:slug": app as never,
+      "/products/:slug/": app as never,
       [adminPath]: app as never,
       [`${adminPath}/`]: app as never,
       ...createApiRoutes(ctx)
