@@ -1407,38 +1407,47 @@ function UpstreamRequestSection({
           <Switch checkedChildren="启用" unCheckedChildren="停用" />
         </Form.Item>
       </div>
-      <div className="form-grid">
-        <Form.Item name={["upstreamConfig", name, "method"]} label="Method">
-          <Select options={HTTP_METHOD_OPTIONS} />
-        </Form.Item>
-        <Form.Item name={["upstreamConfig", name, "timeoutMs"]} label="超时">
-          <InputNumber min={1000} step={500} precision={0} className="full-width" suffix="ms" />
-        </Form.Item>
-      </div>
-      <Form.Item name={["upstreamConfig", name, "url"]} label="URL">
-        <Input placeholder="https://upstream.example/api" />
-      </Form.Item>
-      <Form.Item name={["upstreamConfig", name, "headersText"]} label="请求头">
-        <TextArea rows={3} spellCheck={false} placeholder={"authorization: Bearer {{token}}\ncontent-type: application/json"} />
-      </Form.Item>
-      <Form.Item noStyle shouldUpdate={(prev, current) => prev.upstreamConfig?.[name]?.method !== current.upstreamConfig?.[name]?.method}>
+      <Form.Item noStyle shouldUpdate={(prev, current) => prev.upstreamConfig?.[name]?.enabled !== current.upstreamConfig?.[name]?.enabled}>
         {({ getFieldValue }) => {
-          const method = getFieldValue(["upstreamConfig", name, "method"]);
-          return method === "GET" ? null : (
+          const enabled = Boolean(getFieldValue(["upstreamConfig", name, "enabled"]));
+          return enabled ? (
             <>
               <div className="form-grid">
-                <Form.Item name={["upstreamConfig", name, "bodyType"]} label="Body 类型">
-                  <Select options={BODY_TYPE_OPTIONS} />
+                <Form.Item name={["upstreamConfig", name, "method"]} label="Method">
+                  <Select options={HTTP_METHOD_OPTIONS} />
+                </Form.Item>
+                <Form.Item name={["upstreamConfig", name, "timeoutMs"]} label="超时">
+                  <InputNumber min={1000} step={500} precision={0} className="full-width" suffix="ms" />
                 </Form.Item>
               </div>
-              <Form.Item name={["upstreamConfig", name, "bodyText"]} label="请求体">
-                <TextArea rows={5} spellCheck={false} placeholder={'{"sku":"{{sku}}","orderId":"{{orderId}}"}'} />
+              <Form.Item name={["upstreamConfig", name, "url"]} label="URL">
+                <Input placeholder="https://upstream.example/api" />
               </Form.Item>
+              <Form.Item name={["upstreamConfig", name, "headersText"]} label="请求头">
+                <TextArea rows={3} spellCheck={false} placeholder={"authorization: Bearer {{token}}\ncontent-type: application/json"} />
+              </Form.Item>
+              <Form.Item noStyle shouldUpdate={(prev, current) => prev.upstreamConfig?.[name]?.method !== current.upstreamConfig?.[name]?.method}>
+                {({ getFieldValue: getRequestFieldValue }) => {
+                  const method = getRequestFieldValue(["upstreamConfig", name, "method"]);
+                  return method === "GET" ? null : (
+                    <>
+                      <div className="form-grid">
+                        <Form.Item name={["upstreamConfig", name, "bodyType"]} label="Body 类型">
+                          <Select options={BODY_TYPE_OPTIONS} />
+                        </Form.Item>
+                      </div>
+                      <Form.Item name={["upstreamConfig", name, "bodyText"]} label="请求体">
+                        <TextArea rows={5} spellCheck={false} placeholder={'{"sku":"{{sku}}","orderId":"{{orderId}}"}'} />
+                      </Form.Item>
+                    </>
+                  );
+                }}
+              </Form.Item>
+              {children}
             </>
-          );
+          ) : null;
         }}
       </Form.Item>
-      {children}
     </div>
   );
 }
