@@ -3076,7 +3076,7 @@ function parseScalar(value: unknown, type: ScalarValueType | undefined) {
     return "";
   }
   const valueType = type ?? "string";
-  if (valueType === "string") {
+  if (valueType === "string" || isFullTemplateExpression(text)) {
     return text;
   }
   if (valueType === "number") {
@@ -3100,6 +3100,10 @@ function parseScalar(value: unknown, type: ScalarValueType | undefined) {
   } catch {
     throw new Error("等于值必须是有效 JSON");
   }
+}
+
+function isFullTemplateExpression(value: string) {
+  return /^\{\{\s*[^{}\s]+\s*}}$/.test(value);
 }
 
 function normalizeOptionalNumber(value: unknown) {
